@@ -5,6 +5,13 @@ import operator
 import math
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time
+import random
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.cluster import AgglomerativeClustering
+
+from scipy.cluster.hierarchy import linkage, fcluster, fclusterdata
+
 
 
 
@@ -35,7 +42,7 @@ class analyzeSEQ:
         self.pi_p2_1 = 0.500478305194 #P1 allele in P1/P2
         self.pi_p2_2 = 0.49902244194 #P2 allele in P1/P2
         self.pi_p2_3 = 0.000499252866 #Seq error in P1/P2
-        self.mu = .99
+        self.mu = .99999
         ###Probability states for the HMM###
 
         self.init_chrom_states = {'p1':np.log(0.5), 'p2':np.log(0.5)}
@@ -44,10 +51,27 @@ class analyzeSEQ:
                        }
         self.transitions_probs ={'p1':{'p1':np.log(self.mu), 'p2':np.log(1-self.mu)}, 'p2':{'p1': np.log(1-self.mu), 'p2':np.log(self.mu)}}
 
-    def decode(self, pointers, fileName, path):
+    def decode(self, pointers, snp_matrix):
 
-        for chromosome in range(0, 5, 2):
-            pass
+        rbp_positions= [] #chr2, chr3, chrx
+
+        chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
+        chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
+        chr_x = snp_matrix[4][:,0] / 1000000
+
+        all_chr_arms = [chr_2, chr_3, chr_x]
+        chr_index = 0
+        for traceback in pointers:
+            #iterate through pointers for each chromosome
+            for position in range(1, len(traceback)):
+                #Check for a change in state from P1/P1 to P1/P2
+                if traceback[position-1] != traceback[position]:
+                    rbp_positions.append(all_chr_arms[chr_index][position])
+
+
+            chr_index += 1
+
+        return rbp_positions
     def hmmFwBw(self, snp_input):
         states = ['p1', 'p2']
         chr_posteriors = []
@@ -131,23 +155,36 @@ class analyzeSEQ:
 
 
         return chr_posteriors
-    def draw(self, posterior_matrix, snp_matrix):
+    def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth):
+        chr_decoding = {0:'Chr2', 1:'Chr3', 2:'ChrX'}
 
-        chr_2 = np.concatenate((snp_matrix[0][:,0],snp_matrix[1][:,0] + 23000000)) / 1000000
-        fig = plt.figure(figsize=(15, 5))
-        #sns.lineplot(chr_2, posterior_matrix[0][0])
-        sns.lineplot(chr_2, posterior_matrix[0][1])
-        plt.title('Posterior Probabilities of P1/P2 (Chr 2)')
-        plt.ylabel('-log(probability)')
-        plt.xlabel('Position (Mb)')
-        plt.axvline(16.319859, linestyle='--', color='red')
-        legend = ['P1/P2 Probability', 'Recombination breakpoint (16,319,859 bp)']
-        plt.xlim((10, 20))
-        plt.figlegend(legend)
+        chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
+        chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
+        chr_x = snp_matrix[4][:, 0] / 1000000
+        all_chr_arms = [chr_2, chr_3, chr_x]
 
-        plot_name = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', 'test2_posteriors.png')
+        with sns.axes_style('darkgrid'):
+            fig = plt.figure(figsize=(20, 10))
+            axs = fig.subplots(3,1)
+
+        for arm in range(3):
+
+            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][0], ax=axs[arm])
+            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][1], ax=axs[arm])
+            axs[arm].set_title('{0}'.format(chr_decoding[arm]))
+            axs[arm].set_ylabel('log(probability)')
+            axs[arm].set_xlabel('Position (Mb)')
+
+            axs[arm].axvline(predicted_rbps[arm], linestyle='--', color='red')
+            axs[arm].axvline(truth[0][arm], linestyle='--', color='blue')
+
+            legend = ['P1/P1 Probability', 'P1/P2 Probability','Predicted Breakpoint: {0:.0f} bp'.format(predicted_rbps[arm] * 1000000), 'True Breakpoint: {0:.0f} bp'.format(truth[0][arm] * 1000000)]
+            axs[arm].legend(legend)
+        plt.suptitle('Recombination Breakpoint Predictions')
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plot_name = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', 'sub_sample_test(.04).png')
         plt.savefig(plot_name, dpi=200)
-
+        #plt.show()
     def hmmViterbi(self, snp_input):
 
         """
@@ -215,6 +252,7 @@ class analyzeSEQ:
                     startPos = 1
                     pointers.append(1)
             pointers.reverse()
+
             arm_pointers.append(pointers)
 
         return arm_pointers
@@ -399,7 +437,76 @@ class analyzeSEQ:
 
         return polarized_SNPs
 
+    def readCO(self, tsv, path, sample_num=525):
+        true_crossovers = np.zeros(shape=(sample_num, 3))
+        add_Mb = {'2L': 0, '2R': 23000000, '3L': 0, '3R': 24500000, 'X': 0}
+        full_tsv = os.path.join(path, tsv)
+        with open(full_tsv, 'r') as myTsv:
+            TSV_reader = csv.reader(myTsv, delimiter='\t')
+            next(TSV_reader)
+            index = 0
+            for field in TSV_reader:
 
+                chr2 = (int(field[2]) + add_Mb[field[1]]) /1000000
+                chr3 = (int(field[5]) + add_Mb[field[4]]) / 1000000
+                chrX = int(field[8]) / 1000000
+
+                true_crossovers[index] = np.asarray([chr2, chr3, chrX])
+                index += 1
+        return true_crossovers
+
+
+    def subSample_SNP(self, snp_input, sampling):
+        all_subsamples = []
+        for chrom in range(5):
+            #sample random indices from our SNP array
+            rand_snps = sorted(random.sample(range(len(snp_input[chrom][:,0])-1), int(sampling*len(snp_input[chrom][:,0]))))
+
+            #extract SNP features:
+            sub_sampledSNPS = np.zeros(shape=(len(rand_snps), 4))
+
+            for snp in range(len(rand_snps)):
+                sub_sampledSNPS[snp] = snp_input[chrom][rand_snps[snp]]
+            all_subsamples.append(sub_sampledSNPS)
+
+        all_subsamples = np.asarray(all_subsamples)
+
+
+        return all_subsamples
+
+
+    def cluster_RBPs(self, predictions, truth, chr2_dist=1000, chr3_dist=1000, chrX_dist=1000):
+        """
+        An algorithm for clustering our 3 dimensional points in space.
+
+        Clusters will be called by a maximum distance cut off predetermined by the input parameters of this function.
+        I have designed the function to have 3 seperate minimum distance parameters for each chromosome, but the way that
+        the distance in 3d space is formulated I don't think it will make that much of a distance.
+
+        Once you have the distances computed then we must simply aglomerate all of the individuals that are called from the same breakpoints
+
+
+        :return:
+        """
+
+        #Compute the mean 3d distance from our min dist for each bp
+        distance = math.sqrt(chr2_dist**2 + chr3_dist**2 + chrX_dist**2) / 1000000
+
+        #Cluster by a min distance between points:
+        cluster_pred = fclusterdata(predictions, distance , criterion='distance') #This works well we must determine what is a reasonable minimum euclidean distance between points however
+
+
+
+        #### get all duplicates
+        call_dup = []
+        for cell in range(len(cluster_pred)):
+            for duplicate in range(len(cluster_pred)):
+                if cluster_pred[cell] == cluster_pred[duplicate] and cell != duplicate:
+                    call_dup.append(tuple(sorted([cell+1, duplicate+1])))
+
+        duplicate_cells = sorted(list(set(call_dup)), key=operator.itemgetter(1))
+        for i in duplicate_cells:
+            print('{0}\t{1}'.format(i[0], i[1]))
 
 def polarize_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/'):
 
@@ -440,11 +547,35 @@ def detect():
 
     myAnalysis = analyzeSEQ()
     myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/', snp_array='polarized_simulations.npy', encoding='latin1')
-
+    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/", tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+    cell_predictions = np.zeros(shape=(525, 3))
+    index = 0
     for cell in myAnalysis.polarized_samples:
-        #cell_pointers = myAnalysis.hmmRBP(snp_input=cell)
-        #myAnalysis.decode(cell_pointers, fileName='test.txt', path='/home/iskander/Documents/MEIOTIC_DRIVE/')
-        cell_posteriors = myAnalysis.hmmFwBw(cell)
-        myAnalysis.draw(cell_posteriors, cell)
-        break
+        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=.04)
+        cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
+        ML_predicts = myAnalysis.decode(cell_pointers, sub_sampling)
+        cell_predictions[index] = np.asarray(ML_predicts)
+        index += 1
+
+    #    cell_posteriors = myAnalysis.hmmFwBw(sub_sampling)
+    #    cell_predictions.append(ML_predicts)
+        #myAnalysis.draw(cell_posteriors, sub_sampling, ML_predicts, truth=true_CO)
+
+
+########################## 1x ###################
+    #index = 0
+    #for cell in myAnalysis.polarized_samples: #Run viterbi decoding on 1x coverage of all cells the 'perfect' experiment
+    #    cell_pointers = myAnalysis.hmmViterbi(snp_input=cell)
+    #    ML_predicts = myAnalysis.decode(cell_pointers, cell)
+    #    cell_predictions[index] = np.asarray(ML_predicts)
+    #    index += 1
+
+    out_path = os.path.join("/home/iskander/Documents/MEIOTIC_DRIVE/", '0.04x_882_129_ML_predicts.npy')
+    np.save(out_path, cell_predictions)
+    #cell_predictions = np.load(out_path)
+    myAnalysis.cluster_RBPs(cell_predictions, true_CO, chr2_dist=100000, chr3_dist=100000, chrX_dist=100000)
+    # Under 1x getting the parameters to around 10,000 seems like the right move
+start = time.time()
 detect()
+end = time.time() - start
+#print(end)
