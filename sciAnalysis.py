@@ -13,7 +13,80 @@ from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import AgglomerativeClustering
 
 from scipy.cluster.hierarchy import linkage, fcluster, fclusterdata
+import argparse
 
+"""
+------------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2018 Iskander Said
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------------
+
+A modular command line parser for the coder on the go. 
+
+Simply add or remove arguments depending on your program. The code implementation is quite straightforward simply
+write:
+
+def main():
+#Call command line class
+    myCommandLine = CommandLine()
+    #Call a commandline argument
+    myArg = myCommandLine.args.myArg
+
+main()
+
+Done. Boom. 
+"""
+
+
+class CommandLine():
+    def __init__(self, inOpts=None):
+        self.parser = argparse.ArgumentParser(
+            description='An analysis tool for SCI-SEQ WGS data.',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            # Allows the epilog to be formatted in the way I want!!
+            epilog=('''       
+                                           
+            Currently is able to only handle Drosophila Melanogaster data. This tool is designed to detection recombination breakpoints
+            in single cell sequencing data using an HMM. Then it will cluster these cells by their recombination breakpoints to merge similar individuals.
+
+              '''),
+            add_help=True,  # default is True
+            prefix_chars='-',
+            usage='%(prog)s [options] -option1[default] <input >output'
+        )  ###Add or remove optional arguments here
+        self.parser.add_argument("-p", "--polarize", action="store_true",
+                                 help="Call this option to polarize the SNP array from the single cell simulated SNP array to a P1, P2, error polarization.",
+                                 default=False)
+        self.parser.add_argument("-s", "--snp", type=str, action="store", nargs="?",
+                                 help="The SNP array to be input for analysis.",
+                                 default='/home/iskander/Documents/MEIOTIC_DRIVE/polarized_simulations.npy')
+        self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?",
+                                 help="The reference genome numpy file to polarize SNPs",
+                                 default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
+
+        if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
+            self.args = self.parser.parse_args()
+        else:
+            self.args = self.parser.parse_args(inOpts)
 
 
 
@@ -37,17 +110,13 @@ class analyzeSEQ:
         ##### Set parameters for the multinomials ###
 
         #P1 homozygous
-        self.pi_p1_1 = 0.999304824583 #P1 allele in P1 homozygoous region
-        self.pi_p1_2 = 0.000226259923442 #P2 allele in P1 homozygous region
-        self.pi_p1_3 = 0.000468915493558 #Seq error in P1 homozygous region
+        self.pi_p1_1 = 0.9993 #P1 allele in P1 homozygoous region
+        self.pi_p1_2 = 0.0002 #P2 allele in P1 homozygous region
+        self.pi_p1_3 = 0.0005 #Seq error in P1 homozygous region
 
-        self.pi_p2_1 = 0.500478305194 #P1 allele in P1/P2
-        self.pi_p2_2 = 0.49902244194 #P2 allele in P1/P2
-        self.pi_p2_3 = 0.000499252866 #Seq error in P1/P2
-        self.mu = .99999
-
-        #Set transition states as a function of recombination distance:
-        #This will be set as a function
+        self.pi_p2_1 = 0.5005 #P1 allele in P1/P2
+        self.pi_p2_2 = 0.499 #P2 allele in P1/P2
+        self.pi_p2_3 = 0.0005 #Seq error in P1/P2
 
 
 
@@ -58,6 +127,16 @@ class analyzeSEQ:
                        'p2': [np.log(self.pi_p2_1), np.log(self.pi_p2_2), np.log(self.pi_p2_3)]
                        }
         self.transitions_probs ={'p1':{'p1':np.log(1 - self.simple_cM()), 'p2':np.log(self.simple_cM())}, 'p2':{'p1': np.log(self.simple_cM()), 'p2':np.log(1-self.simple_cM())}}
+
+        # manually tune some parameters:
+
+        # myAnalysis.pi_p1_1 = .92
+        # myAnalysis.pi_p1_2 = .075
+        # myAnalysis.pi_p1_3 = .005
+
+        # myAnalysis.pi_p2_1 = .56
+        # myAnalysis.pi_p2_2 = .435
+        # myAnalysis.pi_p2_3 = .005
 
     def get_cM(self, chromosome_arm, mid_point, distance, heterochromatin=((0.53, 18.87),(1.87, 20.87),(0.75, 19.02), (2.58, 27.44),(1.22, 21.21))):
         """
@@ -104,7 +183,7 @@ class analyzeSEQ:
     def decode(self, pointers, snp_matrix):
 
         rbp_positions= np.zeros(shape=(1,3)) #chr2, chr3, chrx
-        rbp_indices = []
+        rbp_indices = np.zeros(shape=(1,3))
 
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
         chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
@@ -118,7 +197,7 @@ class analyzeSEQ:
                 #Check for a change in state from P1/P1 to P1/P2
                 if traceback[position-1] != traceback[position]:
                     rbp_positions[0][chr_index] = all_chr_arms[chr_index][position]
-                    rbp_indices.append(position)
+                    rbp_indices[0][chr_index] = position
 
             chr_index += 1
 
@@ -638,14 +717,18 @@ class analyzeSEQ:
         #for i in duplicate_cells:
         #    print('{0}\t{1}'.format(i[0], i[1]))
 
-def polarize_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/'):
+def polarize_SNP_array(ref, snp):
 
+
+    ref_path, ref_file = os.path.split(ref)
+
+    snp_path, snp_file = os.path.split(snp)
     myAnalysis = analyzeSEQ()
 
-    reference_genome = myAnalysis.load_reference(path=path, reference='882_129.snp_reference.npy')
+    reference_genome = myAnalysis.load_reference(path=ref_path, reference=ref_file)
 
 
-    SNP_data = myAnalysis.load_SNP_array(snp_array='DGRP_882_129_simulations_3_19_19.npy', path=path, encoding='latin1')
+    SNP_data = myAnalysis.load_SNP_array(snp_array=snp_file, path=snp_path, encoding='latin1')
 
     pol_analysis = []
     ID = 1
@@ -658,13 +741,13 @@ def polarize_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/'):
 
     #Save my simulated data
     save_samples = np.asarray(pol_analysis)
-    data_path = os.path.join(path, 'polarized_simulations.npy')
+    data_path = os.path.join(snp_path, 'POLARIZED_' + snp_file)
     np.save(data_path, save_samples)
 
 
 
 def train():
-    #Use every other simulated data set to
+    #Use every other simulated data set to train
 
     myAnalysis = analyzeSEQ()
     myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/', snp_array='polarized_simulations.npy', encoding='latin1')
@@ -673,63 +756,38 @@ def train():
 
     print(pi_P1)
     print(pi_P2)
-def detect():
+def detect_simulated(snp):
 
+    snp_path, snp_file = os.path.split(snp)
     myAnalysis = analyzeSEQ()
-    myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/', snp_array='polarized_simulations.npy', encoding='latin1')
-    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/", tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
-
-    #manually tune some parameters:
-
-    #myAnalysis.pi_p1_1 = .92
-    #myAnalysis.pi_p1_2 = .075
-    #myAnalysis.pi_p1_3 = .005
-
-    #myAnalysis.pi_p2_1 = .56
-    #myAnalysis.pi_p2_2 = .435
-    #myAnalysis.pi_p2_3 = .005
+    myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
+    #true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/", tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
 
     ###### Instaniate arrays #####
     cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
     cell_prediction_indices = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
 
     ###### Perform analysises on sub sampled SNP arrays ####
-    #Draw values from exp distr. with a mean coverage of .05
+    #Simulate coverage in 20,000 - 50,000 unique reads/cell
+    #
     cov_values = np.random.exponential(.015, len(myAnalysis.polarized_samples))
-
+    avg_cov = np.average(cov_values)
+    filtered_cells = [cov for cov in cov_values if cov > .008]
+    
     #Predict BPs
     index = 0
     for cell in myAnalysis.polarized_samples:
         sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov_values[index])
         cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
         ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
-
-        try:
-            cell_predictions[index] = np.asarray(ML_predicts)
-            cell_prediction_indices[index] = np.asarray(ML_indices)
-
-        except ValueError:
-            print(ML_predicts)
-            posterior = myAnalysis.hmmFwBw(sub_sampling)
-            myAnalysis.draw(posterior, sub_sampling, predicted_rbps=ML_predicts[0], truth=true_CO[index], title='{1}ID_{0}_Coverage'.format(cov_values[index], index+1))
+        cell_predictions[index] = np.asarray(ML_predicts)
+        cell_prediction_indices[index] = np.asarray(ML_indices)
         index += 1
 
+    #Cluster the cells based on RBPs and a minimum distance
+    myAnalysis.cluster_RBPs()
 
 
-
-########################## 1x ###################
-    #index = 0
-    #for cell in myAnalysis.polarized_samples: #Run viterbi decoding on 1x coverage of all cells the 'perfect' experiment
-    #    cell_pointers = myAnalysis.hmmViterbi(snp_input=cell)
-    #    ML_predicts = myAnalysis.decode(cell_pointers, cell)
-    #    cell_predictions[index] = np.asarray(ML_predicts)
-    #    index += 1
-
-    #out_path = os.path.join("/home/iskander/Documents/MEIOTIC_DRIVE/", 'exp_0.05x_882_129_ML_predicts.npy')
-    #np.save(out_path, cell_predictions)
-    #cell_predictions = np.load(out_path)
-    #myAnalysis.cluster_RBPs(cell_predictions, true_CO, chr2_dist=80000, chr3_dist=80000, chrX_dist=80000)
-    # Under 1x getting the parameters to around 10,000 seems like the right move
 
 def hmm_Testing():
     #Going to design a function test my viterbi decoding at an exhaustive regime of coverage
@@ -835,7 +893,16 @@ def plotting():
     plt.ylim((0,1.2))
     plt.figlegend(titles)
     plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','test_cov_dist_plot2.png'), dpi=200)
+
+
+if __name__ == '__main__':
+
+    myArgs = CommandLine()
+    if myArgs.args.polarize == True:#If program is called to polarize the SNPs in preprocessing
+        polarize_SNP_array(ref=myArgs.args.reference, snp=myArgs.args.snp)
+    else:
+        detect_simulated(snp=myArgs.args.snp)
 start = time.time()
-detect()
+
 end = time.time() - start
 print(end)
