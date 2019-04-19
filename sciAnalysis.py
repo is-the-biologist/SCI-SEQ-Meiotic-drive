@@ -902,7 +902,4 @@ if __name__ == '__main__':
         polarize_SNP_array(ref=myArgs.args.reference, snp=myArgs.args.snp)
     else:
         detect_simulated(snp=myArgs.args.snp)
-start = time.time()
 
-end = time.time() - start
-print(end)
