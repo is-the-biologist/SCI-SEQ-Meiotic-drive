@@ -3,8 +3,75 @@ import csv
 import numpy as np
 import random
 
+import argparse
+
+"""
+------------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2018 Iskander Said
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------------
+
+A modular command line parser for the coder on the go. 
+
+Simply add or remove arguments depending on your program. The code implementation is quite straightforward simply
+write:
+
+def main():
+#Call command line class
+    myCommandLine = CommandLine()
+    #Call a commandline argument
+    myArg = myCommandLine.args.myArg
+
+main()
+
+Done. Boom. 
+"""
 
 
+class CommandLine():
+    def __init__(self, inOpts=None):
+        self.parser = argparse.ArgumentParser(
+            description='A simulator for single cell sequencing',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            # Allows the epilog to be formatted in the way I want!!
+            epilog=('''                                      
+              
+
+              '''),
+            add_help=True,  # default is True
+            prefix_chars='-',
+            usage='%(prog)s [options] -option1[default] <input >output'
+        )  ###Add or remove optional arguments here
+        self.parser.add_argument("-i", "--individuals", type=int, action="store", nargs="?", help="Input the number of individuals to be sampled from.",
+                                 default=2000)
+        self.parser.add_argument("-c", "--cells", type=int, action="store", nargs="?", help="The number of cells to be simulated.",
+                                 default=600)
+        self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?", help="The reference genome numpy file to draw SNPs from",
+                                 default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
+        self.parser.add_argument('-o', '--output', type=str, action='store', nargs='?', help='The name of your output file', default='out')
+        if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
+            self.args = self.parser.parse_args()
+        else:
+            self.args = self.parser.parse_args(inOpts)
 
 """
 A program that will simulate single cell data of an F2 cross with meiotic drivers at specified loci at varying strength.
@@ -16,7 +83,7 @@ The goal of this program is to design a simulator of low coverage reads 1-2x at 
 NOTE:
 
 DGRP lines were aligned to the Release 5 genome so when we align our reads we should use release 5 OR convert our DGRP coordinates to release 6
-
+'882_129.snp_reference.npy'
 """
 
 
@@ -367,21 +434,31 @@ class simulateSEQ:
 
 if __name__ == '__main__':
 
+############# Call commandline ##########
+
+    myArgs = CommandLine()
+    ###########
     all_simulations = []
     simulate = simulateSEQ()
 
+
+
     #simulate.generateSNPreference(path='/home/iskander/Documents/MEIOTIC_DRIVE/', vcf='882_129.snps.vcf')
-    reference_alleles = simulate.load_reference(path='/home/iskander/Documents/MEIOTIC_DRIVE/', reference='882_129.snp_reference.npy')
+    reference_alleles = simulate.load_reference(path=os.path.split(myArgs.args.reference)[0], reference=os.path.split(myArgs.args.reference)[1])
 
     #Generate several hundred recombinants with some number of multiples
-    for sim in range(1):
+
+    #calculate the expected number of unique cells given the cells and individual arguments:
+    E_uniq= int(myArgs.args.individuals * (1- ((myArgs.args.individuals-1) / myArgs.args.individuals)**myArgs.args.cells))
+
+    for sim in range(E_uniq):
         simulated_SNPs = simulate.simRecombinants(reference=reference_alleles, simID=sim+1)
         all_simulations.append(simulated_SNPs)
 
 
 
     #Generate at random which individuals will be sampled multiple times
-    for collision in range(1):
+    for collision in range(myArgs.args.cells - E_uniq):
         index = random.randint(0, len(simulate.simulated_crossovers)-1)
         crossover = simulate.simulated_crossovers[index]
         simulate.sim_array = [list() for chr in range(5)]
@@ -395,10 +472,10 @@ if __name__ == '__main__':
 
     all_simulations = np.asarray(all_simulations)
 
-    test_path = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', 'new_test.npy')
-    np.save(test_path, all_simulations)
 
-    with open('crossovers.tsv', 'w') as myCO:
+    np.save(myArgs.args.output+'.npy', all_simulations)
+
+    with open(myArgs.args.output+'_crossovers.tsv', 'w') as myCO:
         myCO.write('ID\tCHR1\tPOS1\tP1\tCHR2\tPOS2\tP2\tCHR3\tPOS3\tP3\n')
         for lines in simulate.simulated_crossovers:
             myCO.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}\t{8}\t{9}\n".format(lines[0], lines[1][0], lines[1][3], lines[1][2],lines[2][0], lines[2][3], lines[2][2], lines[3][0], lines[3][3], lines[3][2] ))
