@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 import random
+import scipy.stats as stats
+
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import AgglomerativeClustering
 
@@ -43,17 +45,66 @@ class analyzeSEQ:
         self.pi_p2_2 = 0.49902244194 #P2 allele in P1/P2
         self.pi_p2_3 = 0.000499252866 #Seq error in P1/P2
         self.mu = .99999
+
+        #Set transition states as a function of recombination distance:
+        #This will be set as a function
+
+
+
         ###Probability states for the HMM###
 
         self.init_chrom_states = {'p1':np.log(0.5), 'p2':np.log(0.5)}
         self.state_probs = {'p1':[np.log(self.pi_p1_1), np.log(self.pi_p1_2), np.log(self.pi_p1_3)],
                        'p2': [np.log(self.pi_p2_1), np.log(self.pi_p2_2), np.log(self.pi_p2_3)]
                        }
-        self.transitions_probs ={'p1':{'p1':np.log(self.mu), 'p2':np.log(1-self.mu)}, 'p2':{'p1': np.log(1-self.mu), 'p2':np.log(self.mu)}}
+        self.transitions_probs ={'p1':{'p1':np.log(1 - self.simple_cM()), 'p2':np.log(self.simple_cM())}, 'p2':{'p1': np.log(self.simple_cM()), 'p2':np.log(1-self.simple_cM())}}
+
+    def get_cM(self, chromosome_arm, mid_point, distance, heterochromatin=((0.53, 18.87),(1.87, 20.87),(0.75, 19.02), (2.58, 27.44),(1.22, 21.21))):
+        """
+        Calculate the transition probabilty as a function of recombination distance between each SNP marker in array of emissions as calculated by
+        https://petrov.stanford.edu/cgi-bin/recombination-rates_updateR5.pl#Method
+
+
+        :param chromosome_arm:
+        :param mid_point:
+        :param distance:
+        :param heterochromatin:
+        :return:
+        """
+
+
+
+        if chromosome_arm == 0: #2L
+            if mid_point >= heterochromatin[0][0] and mid_point <= heterochromatin[0][1]:
+                rate = 0
+            else:
+                rate = 2.58909 + 0.40558 * mid_point - 0.02886 * mid_point** 2
+        elif chromosome_arm == 1: #2R
+            if mid_point >= heterochromatin[1][0] and mid_point <= heterochromatin[1][1]:
+                rate = 0
+            else:
+                rate =  -1.435345 + 0.698356 * mid_point - 0.023364 * mid_point**2
+        elif chromosome_arm == 2: #2L
+            if mid_point >= heterochromatin[2][0] and mid_point <= heterochromatin[2][1]:
+                rate = 0
+            else:
+                pass
+
+    def simple_cM(self, dist=100):
+        """
+        A simple calculation for transition probability using the genome wide average cM/Mb rate: 2.46 cM/Mb
+
+        :param dist:
+        :return:
+        """
+
+        trans_prob = 1 - math.exp(-(dist * 2.46*10**-8))
+        return trans_prob
 
     def decode(self, pointers, snp_matrix):
 
-        rbp_positions= [] #chr2, chr3, chrx
+        rbp_positions= np.zeros(shape=(1,3)) #chr2, chr3, chrx
+        rbp_indices = []
 
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
         chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
@@ -66,15 +117,22 @@ class analyzeSEQ:
             for position in range(1, len(traceback)):
                 #Check for a change in state from P1/P1 to P1/P2
                 if traceback[position-1] != traceback[position]:
-                    rbp_positions.append(all_chr_arms[chr_index][position])
-
+                    rbp_positions[0][chr_index] = all_chr_arms[chr_index][position]
+                    rbp_indices.append(position)
 
             chr_index += 1
 
-        return rbp_positions
+        return rbp_positions, rbp_indices
     def hmmFwBw(self, snp_input):
         states = ['p1', 'p2']
         chr_posteriors = []
+
+        chr_2 = np.concatenate((snp_input[0][:, 0], snp_input[1][:, 0] + 23000000))
+        chr_3 = np.concatenate((snp_input[2][:, 0], snp_input[3][:, 0] + 24500000))
+        chr_x = snp_input[4][:, 0]
+        all_chr_arms = [chr_2, False, chr_3, False,
+                        chr_x]  # Have to put these placeholders in this because I have developed a weird codebase and I reap what I so
+
 
         # Fwd Bckwd
 
@@ -103,6 +161,14 @@ class analyzeSEQ:
                 chromosome_arm = snp_input[chrom]
 
             for SNP in range(1, len(chromosome_arm)):
+                dist = abs(all_chr_arms[chrom][SNP] - all_chr_arms[chrom][SNP - 1])
+
+                # Reinstantiate the transition probabilities with distance parameter at each iteration
+                self.transitions_probs = {
+                    'p1': {'p1': np.log(1 - self.simple_cM(dist)), 'p2': np.log(self.simple_cM(dist))},
+                    'p2': {'p1': np.log(self.simple_cM(dist)), 'p2': np.log(1 - self.simple_cM(dist))}}
+
+
                 emission = np.nonzero(chromosome_arm[SNP][1:4])[0][0]
                 for state in range(2):
                     # P(emission|state) * Sum(P(transition to state) * P(state -1), P(transition to state) * P( state -1))
@@ -121,6 +187,13 @@ class analyzeSEQ:
             # Almost same as forward except backward
             for SNP in range(chrom_length-1, 0, -1):  # loop backwards starting at -1 of seq
                 SNP = SNP - 1  # correct for index
+
+                dist = abs(all_chr_arms[chrom][SNP] - all_chr_arms[chrom][SNP + 1])
+
+                # Reinstantiate the transition probabilities with distance parameter at each iteration
+                self.transitions_probs = {
+                    'p1': {'p1': np.log(1 - self.simple_cM(dist)), 'p2': np.log(self.simple_cM(dist))},
+                    'p2': {'p1': np.log(self.simple_cM(dist)), 'p2': np.log(1 - self.simple_cM(dist))}}
 
                 # First loop is to go through sequence
                 for state in range(2):
@@ -155,7 +228,7 @@ class analyzeSEQ:
 
 
         return chr_posteriors
-    def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth):
+    def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth, title='TestID'):
         chr_decoding = {0:'Chr2', 1:'Chr3', 2:'ChrX'}
 
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
@@ -163,26 +236,40 @@ class analyzeSEQ:
         chr_x = snp_matrix[4][:, 0] / 1000000
         all_chr_arms = [chr_2, chr_3, chr_x]
 
+
+        chr2_alleles = [np.nonzero(snp)[0][0] for snp in np.concatenate((snp_matrix[0][ :,[1,2,3] ], snp_matrix[1][ :,[1,2,3] ]))]
+        chr3_alleles = [np.nonzero(snp)[0][0] for snp in np.concatenate((snp_matrix[2][ :,[1,2,3] ], snp_matrix[3][ :,[1,2,3] ]))]
+        chrX_alleles = [np.nonzero(snp)[0][0] for snp in snp_matrix[4][ :,[1,2,3] ]]
+        all_alleles = [chr2_alleles, chr3_alleles, chrX_alleles]
         with sns.axes_style('darkgrid'):
             fig = plt.figure(figsize=(20, 10))
-            axs = fig.subplots(3,1)
+            axs = fig.subplots(3,2)
+
 
         for arm in range(3):
 
-            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][0], ax=axs[arm])
-            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][1], ax=axs[arm])
-            axs[arm].set_title('{0}'.format(chr_decoding[arm]))
-            axs[arm].set_ylabel('log(probability)')
-            axs[arm].set_xlabel('Position (Mb)')
+            sns.lineplot(all_chr_arms[arm], all_alleles[arm], ax=axs[arm][1])
+            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][0], ax=axs[arm][0])
+            sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][1], ax=axs[arm][0])
+            axs[arm][0].set_title('{0}'.format(chr_decoding[arm]))
+            axs[arm][0].set_ylabel('log(probability)')
+            axs[arm][0].set_xlabel('Position (Mb)')
 
-            axs[arm].axvline(predicted_rbps[arm], linestyle='--', color='red')
-            axs[arm].axvline(truth[0][arm], linestyle='--', color='blue')
 
-            legend = ['P1/P1 Probability', 'P1/P2 Probability','Predicted Breakpoint: {0:.0f} bp'.format(predicted_rbps[arm] * 1000000), 'True Breakpoint: {0:.0f} bp'.format(truth[0][arm] * 1000000)]
-            axs[arm].legend(legend)
-        plt.suptitle('Recombination Breakpoint Predictions')
+            axs[arm][1].axvline(truth[arm], linestyle='--', color='blue')
+            axs[arm][1].set_yticks([0,1,2])
+            axs[arm][1].set_yticklabels(['P1', 'P2', 'Error'])
+            axs[arm][0].axvline(predicted_rbps[arm], linestyle='--', color='red')
+            axs[arm][0].axvline(truth[arm], linestyle='--', color='blue')
+            other_legend = ['Parental alleles', 'True Breakpoint: {0:.0f} bp'.format(truth[arm] * 1000000)]
+            legend = ['P1/P1 Probability', 'P1/P2 Probability','Predicted Breakpoint: {0:.0f} bp'.format(predicted_rbps[arm] * 1000000), 'True Breakpoint: {0:.0f} bp'.format(truth[arm] * 1000000)]
+            axs[arm][0].legend(legend)
+            axs[arm][1].legend(other_legend)
+
+
+        plt.suptitle('Recombination Breakpoint Predictions'.format(title))
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plot_name = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', 'sub_sample_test(.04).png')
+        plot_name = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', '{0}.png'.format(title))
         plt.savefig(plot_name, dpi=200)
         #plt.show()
     def hmmViterbi(self, snp_input):
@@ -199,8 +286,14 @@ class analyzeSEQ:
         states = ['p1', 'p2']
         arm_pointers = []
 
-        #Viterbi algorithm
 
+        chr_2 = np.concatenate((snp_input[0][:, 0], snp_input[1][:, 0] + 23000000))
+        chr_3 = np.concatenate((snp_input[2][:, 0], snp_input[3][:, 0] + 24500000))
+        chr_x = snp_input[4][:, 0]
+        all_chr_arms = [chr_2, False, chr_3, False, chr_x] #Have to put these placeholders in this because I have developed a weird codebase and I reap what I sow
+
+
+        #Viterbi algorithm
         for chrom in range(0, 5, 2):# consider each chromosome as a single sequence
             if chrom != 4:
                 chrom_length = len(snp_input[chrom]) + len(snp_input[chrom+1])
@@ -226,8 +319,16 @@ class analyzeSEQ:
                 chromosome_arm = snp_input[chrom]
 
             for SNP in range(1, len(chromosome_arm)):
+
+                dist = abs(all_chr_arms[chrom][SNP] - all_chr_arms[chrom][SNP-1])
+
+                #Reinstantiate the transition probabilities with distance parameter at each iteration
+                self.transitions_probs = {'p1': {'p1': np.log(1 - self.simple_cM(dist)), 'p2': np.log(self.simple_cM(dist))},
+                                          'p2': {'p1': np.log(self.simple_cM(dist)), 'p2': np.log(1 - self.simple_cM(dist))}}
                 emission = np.nonzero(chromosome_arm[SNP][1:4])[0][0]
                 for state in range(2):
+
+
                     # P(emission|state) * Max (P(transition to state) * P(state -1), P(transition to state) * P( state -1)
                     bestScore = max((self.transitions_probs['p1'][states[state]] + hmmMatrix[0][SNP - 1], 0),
                                     (self.transitions_probs['p2'][states[state]] + hmmMatrix[1][SNP - 1], 1),
@@ -292,7 +393,7 @@ class analyzeSEQ:
                     chrIndex_3 = [chr_key[field[4]], int(field[5]), int(field[6]) ]
                     chrIndex_X = [chr_key[field[7]], int(field[8]), int(field[9]) ]
 
-                    self.extractSegments(chrIndex_2, chrIndex_3, chrIndex_X, sampleIndex)
+                    self.extractSegments(chrIndex_2, chrIndex_3, chrIndex_X, sampleIndex, subSample=.05)
 
                 else:
                     pass
@@ -305,12 +406,21 @@ class analyzeSEQ:
         pi_P2 = self.heterozygous_segments / np.sum(self.heterozygous_segments)
 
         return pi_P1, pi_P2
-    def extractSegments(self, chr2, chr3, chrX, sampleID):
+    def extractSegments(self, chr2, chr3, chrX, sampleID, subSample=False):
+        if subSample != False:#If you call subsampling
+            cov = np.random.exponential(subSample)
+            snp_array = self.subSample_SNP(self.polarized_samples[sampleID], sampling=cov)#Sub sample singular cell
+            x_snps = snp_array[chrX[0]]
+            two_snps = snp_array[chr2[0]]
+            three_snps = snp_array[chr3[0]]
 
+        else:
+            x_snps = self.polarized_samples[sampleID][chrX[0]]
+            two_snps = self.polarized_samples[sampleID][chr2[0]]
+            three_snps = self.polarized_samples[sampleID][chr3[0]]
 
         ###Extract relevant SNP counts for ChrX####
-
-        x_snps = self.polarized_samples[sampleID][chrX[0]]
+        #x_snps = self.polarized_samples[sampleID][chrX[0]]
         x_bp = chrX[1]
         if chrX[2] == 1: #Gamete is P1, P2
             for position in range(len(x_snps)):
@@ -330,7 +440,7 @@ class analyzeSEQ:
 
 
         ### Extract relevant SNP counts for Chr2 ##
-        two_snps = self.polarized_samples[sampleID][chr2[0]]
+        #two_snps = self.polarized_samples[sampleID][chr2[0]]
         two_bp = chr2[1]
         if chr2[2] == 1: #P1, P2
 
@@ -359,7 +469,7 @@ class analyzeSEQ:
                 self.heterozygous_segments = self.heterozygous_segments + np.sum(self.polarized_samples[sampleID][0][:, [1,2,3,]], axis=0)
 
         ### Extract relevant SNP counts for chr3####
-        three_snps = self.polarized_samples[sampleID][chr3[0]]
+        #three_snps = self.polarized_samples[sampleID][chr3[0]]
         thre_bp = chr3[1]
         if chr3[2] == 1: #P1, P2
 
@@ -475,7 +585,7 @@ class analyzeSEQ:
         return all_subsamples
 
 
-    def cluster_RBPs(self, predictions, truth, chr2_dist=1000, chr3_dist=1000, chrX_dist=1000):
+    def cluster_RBPs(self, predictions, truth, all_pointers=False, chr2_dist=1000, chr3_dist=1000, chrX_dist=1000):
         """
         An algorithm for clustering our 3 dimensional points in space.
 
@@ -497,16 +607,36 @@ class analyzeSEQ:
 
 
 
-        #### get all duplicates
-        call_dup = []
-        for cell in range(len(cluster_pred)):
-            for duplicate in range(len(cluster_pred)):
-                if cluster_pred[cell] == cluster_pred[duplicate] and cell != duplicate:
-                    call_dup.append(tuple(sorted([cell+1, duplicate+1])))
+        #### Get all cluster predictions and cells into a table:
+        all_clusters = {}
 
-        duplicate_cells = sorted(list(set(call_dup)), key=operator.itemgetter(1))
-        for i in duplicate_cells:
-            print('{0}\t{1}'.format(i[0], i[1]))
+        for cell in range(len(cluster_pred)):
+            if cluster_pred[cell] not in all_clusters.keys():
+                all_clusters[cluster_pred[cell]] = [cell]
+            else:
+                all_clusters[cluster_pred[cell]].append(cell)
+
+        #Clusters and sample IDs are tabulated now we can proceed on confirming their identity
+
+        #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
+        #If clusters have similar breakpoints but different ordering then they are distinct individuals
+
+
+        for clust in all_clusters.keys():
+            if len(all_clusters[clust]) > 1:
+                #Check viterbi of each:
+                for cell in all_clusters[clust]:
+                    for chromosome in range(3):
+                        pass
+
+
+
+
+
+
+        #Print out clusters
+        #for i in duplicate_cells:
+        #    print('{0}\t{1}'.format(i[0], i[1]))
 
 def polarize_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/'):
 
@@ -535,31 +665,56 @@ def polarize_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/'):
 
 def train():
     #Use every other simulated data set to
-    data_path = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', 'polarized_simulations.npy')
-    sim_data = np.load(data_path)
+
     myAnalysis = analyzeSEQ()
-    myAnalysis.polarized_samples = sim_data
+    myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/', snp_array='polarized_simulations.npy', encoding='latin1')
     pi_P1, pi_P2 = myAnalysis.supervisedTraining(path="/home/iskander/Documents/MEIOTIC_DRIVE/",
                                   crossovers="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
 
-
+    print(pi_P1)
+    print(pi_P2)
 def detect():
 
     myAnalysis = analyzeSEQ()
     myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/', snp_array='polarized_simulations.npy', encoding='latin1')
     true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/", tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
-    cell_predictions = np.zeros(shape=(525, 3))
+
+    #manually tune some parameters:
+
+    #myAnalysis.pi_p1_1 = .92
+    #myAnalysis.pi_p1_2 = .075
+    #myAnalysis.pi_p1_3 = .005
+
+    #myAnalysis.pi_p2_1 = .56
+    #myAnalysis.pi_p2_2 = .435
+    #myAnalysis.pi_p2_3 = .005
+
+    ###### Instaniate arrays #####
+    cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
+    cell_prediction_indices = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
+
+    ###### Perform analysises on sub sampled SNP arrays ####
+    #Draw values from exp distr. with a mean coverage of .05
+    cov_values = np.random.exponential(.015, len(myAnalysis.polarized_samples))
+
+    #Predict BPs
     index = 0
     for cell in myAnalysis.polarized_samples:
-        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=.04)
+        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov_values[index])
         cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-        ML_predicts = myAnalysis.decode(cell_pointers, sub_sampling)
-        cell_predictions[index] = np.asarray(ML_predicts)
+        ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+
+        try:
+            cell_predictions[index] = np.asarray(ML_predicts)
+            cell_prediction_indices[index] = np.asarray(ML_indices)
+
+        except ValueError:
+            print(ML_predicts)
+            posterior = myAnalysis.hmmFwBw(sub_sampling)
+            myAnalysis.draw(posterior, sub_sampling, predicted_rbps=ML_predicts[0], truth=true_CO[index], title='{1}ID_{0}_Coverage'.format(cov_values[index], index+1))
         index += 1
 
-    #    cell_posteriors = myAnalysis.hmmFwBw(sub_sampling)
-    #    cell_predictions.append(ML_predicts)
-        #myAnalysis.draw(cell_posteriors, sub_sampling, ML_predicts, truth=true_CO)
+
 
 
 ########################## 1x ###################
@@ -570,12 +725,117 @@ def detect():
     #    cell_predictions[index] = np.asarray(ML_predicts)
     #    index += 1
 
-    out_path = os.path.join("/home/iskander/Documents/MEIOTIC_DRIVE/", '0.04x_882_129_ML_predicts.npy')
-    np.save(out_path, cell_predictions)
+    #out_path = os.path.join("/home/iskander/Documents/MEIOTIC_DRIVE/", 'exp_0.05x_882_129_ML_predicts.npy')
+    #np.save(out_path, cell_predictions)
     #cell_predictions = np.load(out_path)
-    myAnalysis.cluster_RBPs(cell_predictions, true_CO, chr2_dist=100000, chr3_dist=100000, chrX_dist=100000)
+    #myAnalysis.cluster_RBPs(cell_predictions, true_CO, chr2_dist=80000, chr3_dist=80000, chrX_dist=80000)
     # Under 1x getting the parameters to around 10,000 seems like the right move
+
+def hmm_Testing():
+    #Going to design a function test my viterbi decoding at an exhaustive regime of coverage
+    myAnalysis = analyzeSEQ()
+    myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/',
+                                                             snp_array='polarized_simulations.npy', encoding='latin1')
+    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/",
+                                tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+
+    all_cellArray = []
+    predict_array = np.zeros(shape=(100, 3))
+
+    cell_index = 0
+    index = 0
+    cell = myAnalysis.polarized_samples[0]
+    for test in range(1,101):
+
+
+        cov = .05/100 * test
+        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov)
+        cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
+        ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+        predict_array[index] = ML_predicts
+
+        index += 1
+    cell_index += 1
+
+    np.save(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/','coverage_regimes.npy'), predict_array)
+
+
+def plotting():
+
+    myAnalysis = analyzeSEQ()
+    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/",
+                                tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+
+
+    ml_array = np.load(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','coverage_regimes.npy'))
+    ml2_array = np.load(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE', 'coverage_samples.npy'))
+
+    cov_array = [.05/100*cov for cov in range(1, 101)]
+
+    all_dist = np.zeros(shape=(100, 4))
+    index = 0
+    for ML_predicts in ml_array:
+
+        distance = math.sqrt((true_CO[0][0] - ML_predicts[0]) ** 2 + (true_CO[0][1] - ML_predicts[1]) ** 2 + (true_CO[0][2] - ML_predicts[2]) ** 2)  # calculate distance between estimates
+
+        x_dist = abs(true_CO[0][2] - ML_predicts[2])
+        chr2_dist = abs(true_CO[0][0] - ML_predicts[0])
+        chr3_dist = abs(true_CO[0][1] - ML_predicts[1])
+        distances = np.asarray([distance, chr2_dist, chr3_dist, x_dist])
+
+
+        all_dist[index] = distances
+        index += 1
+
+    distance = math.sqrt((true_CO[0][0] - ml2_array[4][0]) ** 2 + (true_CO[0][1] - ml2_array[4][1]) ** 2 + (
+            true_CO[0][2] - ml2_array[4][2]) ** 2)  # calculate distance between estimates
+
+    x_dist = abs(true_CO[0][2] - ml2_array[4][2])
+    chr2_dist = abs(true_CO[0][0] - ml2_array[4][0])
+    chr3_dist = abs(true_CO[0][1] - ml2_array[4][1])
+
+    print(all_dist[cov_array.index(.01)])
+    print(np.asarray([distance, chr2_dist, chr3_dist, x_dist]))
+
+    #######################
+
+
+    titles = ['3d distance', 'Chr2 distance', 'Chr3 distance', 'ChrX distance']
+    #Lineplot distance vs. coverage
+    with sns.axes_style('darkgrid'):
+        fig = plt.figure(1, figsize=(10,5))
+        axs = fig.subplots(4,1, sharex=True, sharey=True)
+    for d in range(4):
+        sns.lineplot(cov_array, all_dist[:,d], ax = axs[d])
+        axs[d].set_title('{0}'.format(titles[d]))
+        axs[d].set_ylabel('Distance (Mb)')
+        #axs[d].set_xlim(0, .06)
+    plt.xlabel('Coverage')
+
+    plt.suptitle('Distance from True RBP vs. Coverage')
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','TEST_dist_cov.png'), dpi=200)
+
+    #3d scatter plot
+    fig3d = plt.figure(2, figsize=(20,20))
+    ax = fig3d.add_subplot(111, projection='3d')
+    ax.scatter(ml_array[:,0], ml_array[:,1], ml_array[:,2], marker='o')
+    ax.scatter(true_CO[0][0], true_CO[0][1], true_CO[0][2], c='red', marker='o', s=50)
+    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','3d_cov.png'), dpi=200)
+
+    #Line plot but on the same axes
+    with sns.axes_style('darkgrid'):
+        fig3 = plt.figure(3, figsize=(10,5))
+        #axs = fig.subplots(4,1, sharex=True, sharey=True)
+    for d in range(4):
+        sns.lineplot(cov_array, all_dist[:,d])
+    plt.title('Distance v. Coverage')
+    plt.xlabel('Coverage')
+    plt.ylabel('Distance (Mb)')
+    plt.ylim((0,1.2))
+    plt.figlegend(titles)
+    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','test_cov_dist_plot2.png'), dpi=200)
 start = time.time()
 detect()
 end = time.time() - start
-#print(end)
+print(end)
