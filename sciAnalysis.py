@@ -5,15 +5,14 @@ import operator
 import math
 import matplotlib.pyplot as plt
 import seaborn as sns
-import time
 import random
+import time
 import scipy.stats as stats
-
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import AgglomerativeClustering
-
 from scipy.cluster.hierarchy import linkage, fcluster, fclusterdata
 import argparse
+from multiprocessing import Pool
 
 """
 ------------------------------------------------------------------------------------
@@ -82,7 +81,9 @@ class CommandLine():
         self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?",
                                  help="The reference genome numpy file to polarize SNPs",
                                  default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
-
+        self.parser.add_argument("-t", "--threads", type=int, action="store", nargs="?",
+                                 help="Number of threads to be specified if multithreading is to be used.",
+                                 default=0)
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
         else:
@@ -197,7 +198,7 @@ class analyzeSEQ:
                 #Check for a change in state from P1/P1 to P1/P2
                 if traceback[position-1] != traceback[position]:
                     rbp_positions[0][chr_index] = all_chr_arms[chr_index][position]
-                    rbp_indices[0][chr_index] = position
+                    rbp_indices[0][chr_index] = traceback[position]
 
             chr_index += 1
 
@@ -664,7 +665,7 @@ class analyzeSEQ:
         return all_subsamples
 
 
-    def cluster_RBPs(self, predictions, truth, all_pointers=False, chr2_dist=1000, chr3_dist=1000, chrX_dist=1000):
+    def cluster_RBPs(self, predictions, snp_pos, distance=.2):
         """
         An algorithm for clustering our 3 dimensional points in space.
 
@@ -678,17 +679,15 @@ class analyzeSEQ:
         :return:
         """
 
-        #Compute the mean 3d distance from our min dist for each bp
-        distance = math.sqrt(chr2_dist**2 + chr3_dist**2 + chrX_dist**2) / 1000000
+
 
         #Cluster by a min distance between points:
-        cluster_pred = fclusterdata(predictions, distance , criterion='distance') #This works well we must determine what is a reasonable minimum euclidean distance between points however
+        cluster_pred = fclusterdata(predictions, distance , criterion='distance')
 
 
 
         #### Get all cluster predictions and cells into a table:
         all_clusters = {}
-
         for cell in range(len(cluster_pred)):
             if cluster_pred[cell] not in all_clusters.keys():
                 all_clusters[cluster_pred[cell]] = [cell]
@@ -699,23 +698,17 @@ class analyzeSEQ:
 
         #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
         #If clusters have similar breakpoints but different ordering then they are distinct individuals
-
-
         for clust in all_clusters.keys():
             if len(all_clusters[clust]) > 1:
-                #Check viterbi of each:
-                for cell in all_clusters[clust]:
-                    for chromosome in range(3):
-                        pass
+                #Check viterbi switching of each:
+                switches = [tuple(snp_pos[ID]) for ID in all_clusters[clust]]
+                if len(set(switches)) == 1:#If all points in the cluster also have the same switch from P1, P2 or vice versa then we are likely calling our clusters correctly.
+                    pass
+                else:
+                    print(all_clusters[clust])
 
+        #Clusters
 
-
-
-
-
-        #Print out clusters
-        #for i in duplicate_cells:
-        #    print('{0}\t{1}'.format(i[0], i[1]))
 
 def polarize_SNP_array(ref, snp):
 
@@ -756,6 +749,8 @@ def train():
 
     print(pi_P1)
     print(pi_P2)
+
+
 def detect_simulated(snp):
 
     snp_path, snp_file = os.path.split(snp)
@@ -770,11 +765,13 @@ def detect_simulated(snp):
     ###### Perform analysises on sub sampled SNP arrays ####
     #Simulate coverage in 20,000 - 50,000 unique reads/cell
     #
-    cov_values = np.random.exponential(.015, len(myAnalysis.polarized_samples))
-    avg_cov = np.average(cov_values)
-    filtered_cells = [cov for cov in cov_values if cov > .008]
-    
+    #cov_values = np.random.exponential(.015, len(myAnalysis.polarized_samples))
+    cov_values = np.random.uniform(.008, .02, len(myAnalysis.polarized_samples))
+
+    #for i in range(5):
+    #    print(len(myAnalysis.polarized_samples[0][i]))
     #Predict BPs
+
     index = 0
     for cell in myAnalysis.polarized_samples:
         sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov_values[index])
@@ -785,7 +782,7 @@ def detect_simulated(snp):
         index += 1
 
     #Cluster the cells based on RBPs and a minimum distance
-    myAnalysis.cluster_RBPs()
+    myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_indices)
 
 
 
@@ -818,88 +815,44 @@ def hmm_Testing():
     np.save(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/','coverage_regimes.npy'), predict_array)
 
 
-def plotting():
 
-    myAnalysis = analyzeSEQ()
-    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/",
-                                tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+def multiThreaded(cell_snp):
+    cov = np.random.uniform(.008, .02) #Sub sample the SNPs to simulate the low coverage
+    sub_sampling = myAnalysis.subSample_SNP(cell_snp, sampling=cov)
+    cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
+    ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
 
+    return ML_predicts, ML_indices
 
-    ml_array = np.load(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','coverage_regimes.npy'))
-    ml2_array = np.load(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE', 'coverage_samples.npy'))
-
-    cov_array = [.05/100*cov for cov in range(1, 101)]
-
-    all_dist = np.zeros(shape=(100, 4))
-    index = 0
-    for ML_predicts in ml_array:
-
-        distance = math.sqrt((true_CO[0][0] - ML_predicts[0]) ** 2 + (true_CO[0][1] - ML_predicts[1]) ** 2 + (true_CO[0][2] - ML_predicts[2]) ** 2)  # calculate distance between estimates
-
-        x_dist = abs(true_CO[0][2] - ML_predicts[2])
-        chr2_dist = abs(true_CO[0][0] - ML_predicts[0])
-        chr3_dist = abs(true_CO[0][1] - ML_predicts[1])
-        distances = np.asarray([distance, chr2_dist, chr3_dist, x_dist])
-
-
-        all_dist[index] = distances
-        index += 1
-
-    distance = math.sqrt((true_CO[0][0] - ml2_array[4][0]) ** 2 + (true_CO[0][1] - ml2_array[4][1]) ** 2 + (
-            true_CO[0][2] - ml2_array[4][2]) ** 2)  # calculate distance between estimates
-
-    x_dist = abs(true_CO[0][2] - ml2_array[4][2])
-    chr2_dist = abs(true_CO[0][0] - ml2_array[4][0])
-    chr3_dist = abs(true_CO[0][1] - ml2_array[4][1])
-
-    print(all_dist[cov_array.index(.01)])
-    print(np.asarray([distance, chr2_dist, chr3_dist, x_dist]))
-
-    #######################
-
-
-    titles = ['3d distance', 'Chr2 distance', 'Chr3 distance', 'ChrX distance']
-    #Lineplot distance vs. coverage
-    with sns.axes_style('darkgrid'):
-        fig = plt.figure(1, figsize=(10,5))
-        axs = fig.subplots(4,1, sharex=True, sharey=True)
-    for d in range(4):
-        sns.lineplot(cov_array, all_dist[:,d], ax = axs[d])
-        axs[d].set_title('{0}'.format(titles[d]))
-        axs[d].set_ylabel('Distance (Mb)')
-        #axs[d].set_xlim(0, .06)
-    plt.xlabel('Coverage')
-
-    plt.suptitle('Distance from True RBP vs. Coverage')
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','TEST_dist_cov.png'), dpi=200)
-
-    #3d scatter plot
-    fig3d = plt.figure(2, figsize=(20,20))
-    ax = fig3d.add_subplot(111, projection='3d')
-    ax.scatter(ml_array[:,0], ml_array[:,1], ml_array[:,2], marker='o')
-    ax.scatter(true_CO[0][0], true_CO[0][1], true_CO[0][2], c='red', marker='o', s=50)
-    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','3d_cov.png'), dpi=200)
-
-    #Line plot but on the same axes
-    with sns.axes_style('darkgrid'):
-        fig3 = plt.figure(3, figsize=(10,5))
-        #axs = fig.subplots(4,1, sharex=True, sharey=True)
-    for d in range(4):
-        sns.lineplot(cov_array, all_dist[:,d])
-    plt.title('Distance v. Coverage')
-    plt.xlabel('Coverage')
-    plt.ylabel('Distance (Mb)')
-    plt.ylim((0,1.2))
-    plt.figlegend(titles)
-    plt.savefig(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE','test_cov_dist_plot2.png'), dpi=200)
 
 
 if __name__ == '__main__':
-
+    start = time.time()
     myArgs = CommandLine()
     if myArgs.args.polarize == True:#If program is called to polarize the SNPs in preprocessing
         polarize_SNP_array(ref=myArgs.args.reference, snp=myArgs.args.snp)
     else:
-        detect_simulated(snp=myArgs.args.snp)
+        if myArgs.args.threads == 0:
+            #### Single thread ######
+            detect_simulated(snp=myArgs.args.snp)
+        else:
+            #### Multithreaded ####
+            snp_path, snp_file = os.path.split(myArgs.args.snp)
+            myAnalysis = analyzeSEQ()
+            myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
+            cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
+            cell_prediction_switches = np.zeros(shape=(len(myAnalysis.polarized_samples),3))
 
+            #Run the functions
+            with Pool(processes=myArgs.args.threads) as myPool:
+                ML_result = myPool.map(multiThreaded, myAnalysis.polarized_samples)
+
+            for pred in range(len(ML_result)):
+                cell_predictions[pred] = ML_result[pred][0]
+                cell_prediction_switches[pred] = ML_result[pred][0]
+
+            #Cluster method:
+            myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches)
+
+    end = time.time()
+    print(end-start)
