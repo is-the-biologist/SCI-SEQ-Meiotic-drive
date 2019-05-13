@@ -7,10 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 import time
-import scipy.stats as stats
-from mpl_toolkits.mplot3d import Axes3D
-from sklearn.cluster import AgglomerativeClustering
-from scipy.cluster.hierarchy import linkage, fcluster, fclusterdata
+import sys
+from scipy.cluster.hierarchy import fclusterdata
 import argparse
 from multiprocessing import Pool
 
@@ -18,7 +16,7 @@ from multiprocessing import Pool
 ------------------------------------------------------------------------------------
 MIT License
 
-Copyright (c) 2018 Iskander Said
+Copyright (c) 2019 Iskander Said
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -82,7 +80,7 @@ class CommandLine():
                                  help="The reference genome numpy file to polarize SNPs",
                                  default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
         self.parser.add_argument("-t", "--threads", type=int, action="store", nargs="?",
-                                 help="Number of threads to be specified if multithreading is to be used.",
+                                 help="Number of threads to be specified if multi-threading is to be used.",
                                  default=0)
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
@@ -184,7 +182,8 @@ class analyzeSEQ:
     def decode(self, pointers, snp_matrix):
 
         rbp_positions= np.zeros(shape=(1,3)) #chr2, chr3, chrx
-        rbp_indices = np.zeros(shape=(1,3))
+        rbp_switches= np.zeros(shape=(1,3))
+        rbp_indices = np.zeros(shape=(1, 3))
 
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
         chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
@@ -197,12 +196,14 @@ class analyzeSEQ:
             for position in range(1, len(traceback)):
                 #Check for a change in state from P1/P1 to P1/P2
                 if traceback[position-1] != traceback[position]:
-                    rbp_positions[0][chr_index] = all_chr_arms[chr_index][position]
-                    rbp_indices[0][chr_index] = traceback[position]
+                    breakpoint = all_chr_arms[chr_index][position-1] + abs(all_chr_arms[chr_index][position] - all_chr_arms[chr_index][position-1])/2 #take midpoint from the switch over position
+                    rbp_positions[0][chr_index] = breakpoint
+                    rbp_indices[0][chr_index] = position
+                    rbp_switches[0][chr_index] = traceback[position]
 
             chr_index += 1
 
-        return rbp_positions, rbp_indices
+        return rbp_positions, rbp_switches, rbp_indices
     def hmmFwBw(self, snp_input):
         states = ['p1', 'p2']
         chr_posteriors = []
@@ -227,7 +228,7 @@ class analyzeSEQ:
 
             # First state
             # P(state) * P(emission|state)
-            init_emission = np.nonzero(snp_input[chrom][0][1:4])[0][0]
+            init_emission = int(snp_input[chrom][0][1])
 
             for state in range(2):
                 fMatrix[state][0] = self.init_chrom_states[states[state]] + self.state_probs[states[state]][
@@ -249,7 +250,7 @@ class analyzeSEQ:
                     'p2': {'p1': np.log(self.simple_cM(dist)), 'p2': np.log(1 - self.simple_cM(dist))}}
 
 
-                emission = np.nonzero(chromosome_arm[SNP][1:4])[0][0]
+                emission = int(chromosome_arm[SNP][1])
                 for state in range(2):
                     # P(emission|state) * Sum(P(transition to state) * P(state -1), P(transition to state) * P( state -1))
                     sumScore = self.sumLogProb(self.transitions_probs['p1'][states[state]] + fMatrix[0][SNP-1],
@@ -279,7 +280,7 @@ class analyzeSEQ:
                 for state in range(2):
                     # Sum(P(transition to state) * P(state + 1) * P(state +1),
                     #  P(transition to state) * P( state + 1) * P(emission + 1|state+1) )
-                    emission = np.nonzero(chromosome_arm[SNP+1][1:4])[0][0]
+                    emission = int(chromosome_arm[SNP+1][1])
 
                     bestScore = self.sumLogProb(
                         self.state_probs['p1'][emission] + self.transitions_probs['p1'][states[state]] + bMatrix[0][SNP + 1],
@@ -308,7 +309,7 @@ class analyzeSEQ:
 
 
         return chr_posteriors
-    def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth, title='TestID'):
+    def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth, interval, title='TestID'):
         chr_decoding = {0:'Chr2', 1:'Chr3', 2:'ChrX'}
 
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
@@ -317,9 +318,10 @@ class analyzeSEQ:
         all_chr_arms = [chr_2, chr_3, chr_x]
 
 
-        chr2_alleles = [np.nonzero(snp)[0][0] for snp in np.concatenate((snp_matrix[0][ :,[1,2,3] ], snp_matrix[1][ :,[1,2,3] ]))]
-        chr3_alleles = [np.nonzero(snp)[0][0] for snp in np.concatenate((snp_matrix[2][ :,[1,2,3] ], snp_matrix[3][ :,[1,2,3] ]))]
-        chrX_alleles = [np.nonzero(snp)[0][0] for snp in snp_matrix[4][ :,[1,2,3] ]]
+        chr2_alleles = np.concatenate((snp_matrix[0], snp_matrix[1]))[:,1]
+        chr3_alleles = np.concatenate((snp_matrix[2], snp_matrix[3]))[:,1]
+        chrX_alleles = snp_matrix[4][:,1]
+
         all_alleles = [chr2_alleles, chr3_alleles, chrX_alleles]
         with sns.axes_style('darkgrid'):
             fig = plt.figure(figsize=(20, 10))
@@ -327,6 +329,8 @@ class analyzeSEQ:
 
 
         for arm in range(3):
+            left_interval = all_chr_arms[arm][int(interval[arm][0])]
+            right_interval = all_chr_arms[arm][int(interval[arm][1])]
 
             sns.lineplot(all_chr_arms[arm], all_alleles[arm], ax=axs[arm][1])
             sns.lineplot(all_chr_arms[arm], posterior_matrix[arm][0], ax=axs[arm][0])
@@ -339,8 +343,13 @@ class analyzeSEQ:
             axs[arm][1].axvline(truth[arm], linestyle='--', color='blue')
             axs[arm][1].set_yticks([0,1,2])
             axs[arm][1].set_yticklabels(['P1', 'P2', 'Error'])
+
             axs[arm][0].axvline(predicted_rbps[arm], linestyle='--', color='red')
             axs[arm][0].axvline(truth[arm], linestyle='--', color='blue')
+
+            axs[arm][0].axvline(left_interval, linestyle='--', color='green')
+            axs[arm][0].axvline(right_interval, linestyle='--', color='green')
+
             other_legend = ['Parental alleles', 'True Breakpoint: {0:.0f} bp'.format(truth[arm] * 1000000)]
             legend = ['P1/P1 Probability', 'P1/P2 Probability','Predicted Breakpoint: {0:.0f} bp'.format(predicted_rbps[arm] * 1000000), 'True Breakpoint: {0:.0f} bp'.format(truth[arm] * 1000000)]
             axs[arm][0].legend(legend)
@@ -385,7 +394,8 @@ class analyzeSEQ:
 
             #First state
             # P(state) * P(emission|state)
-            init_emission = np.nonzero(snp_input[chrom][0][1:4])[0][0]
+
+            init_emission = int(snp_input[chrom][0][1])
 
             for state in range(2):
                 hmmMatrix[state][0] = self.init_chrom_states[states[state]] + self.state_probs[states[state]][init_emission]
@@ -405,7 +415,7 @@ class analyzeSEQ:
                 #Reinstantiate the transition probabilities with distance parameter at each iteration
                 self.transitions_probs = {'p1': {'p1': np.log(1 - self.simple_cM(dist)), 'p2': np.log(self.simple_cM(dist))},
                                           'p2': {'p1': np.log(self.simple_cM(dist)), 'p2': np.log(1 - self.simple_cM(dist))}}
-                emission = np.nonzero(chromosome_arm[SNP][1:4])[0][0]
+                emission = int(chromosome_arm[SNP][1])
                 for state in range(2):
 
 
@@ -582,14 +592,14 @@ class analyzeSEQ:
 
     def load_SNP_array(self, snp_array, path, encoding='UTF-8'):
         snp_File = os.path.join(path, snp_array)
-        SNPs = np.load(snp_File, encoding=encoding)
+        SNPs = np.load(snp_File, encoding=encoding, allow_pickle=True)
 
         return SNPs
 
 
     def load_reference(self, reference, path):
         np_file = os.path.join(path, reference)
-        reference = np.load(np_file)
+        reference = np.load(np_file,  allow_pickle=True)
 
         return reference
 
@@ -612,15 +622,15 @@ class analyzeSEQ:
 
         for chrom in range(5):
             assert len(simSNP[chrom][:, 0]) == len(refSNP[chrom][:, 0]), "Sample SNP array does not have same dimension as reference SNPs; Sample: {0}".format(sampleID)
-            chrom_SNPs = np.zeros(shape=(len(simSNP[chrom][:,0]) , 4))
+            chrom_SNPs = np.zeros(shape=(len(simSNP[chrom][:,0]) , 2))
             chrom_SNPs[:,0] = simSNP[chrom][:,0]
             for snp in range(len(simSNP[chrom][:,0])):
                 if simSNP[chrom][snp][1] == refSNP[chrom][snp][1]: #P1 allele
-                    chrom_SNPs[snp][1] += 1
+                    chrom_SNPs[snp][1] = 0
                 elif simSNP[chrom][snp][1] == refSNP[chrom][snp][2]: #P2 allele
-                    chrom_SNPs[snp][2] += 1
-                else:# P1 allele
-                    chrom_SNPs[snp][3] += 1
+                    chrom_SNPs[snp][1] = 1
+                else:# error allele
+                    chrom_SNPs[snp][1] = 2
             polarized_SNPs.append(chrom_SNPs)
 
         polarized_SNPs = np.asarray(polarized_SNPs)
@@ -650,10 +660,10 @@ class analyzeSEQ:
         all_subsamples = []
         for chrom in range(5):
             #sample random indices from our SNP array
-            rand_snps = sorted(random.sample(range(len(snp_input[chrom][:,0])-1), int(sampling*len(snp_input[chrom][:,0]))))
+            rand_snps = sorted(random.sample(range(len(snp_input[chrom][:,0])-1), int(sampling/5)))
 
             #extract SNP features:
-            sub_sampledSNPS = np.zeros(shape=(len(rand_snps), 4))
+            sub_sampledSNPS = np.zeros(shape=(len(rand_snps), 2))
 
             for snp in range(len(rand_snps)):
                 sub_sampledSNPS[snp] = snp_input[chrom][rand_snps[snp]]
@@ -664,15 +674,61 @@ class analyzeSEQ:
 
         return all_subsamples
 
+    def calc_interval(self, posterior_prob, ML_ind, ML_switch, threshold=.99):
+        """
+        Use the inherent properties of the posterior probabilities to draw some intervals around our predicted Maximum likelihood detected viterbi interval.
 
-    def cluster_RBPs(self, predictions, snp_pos, distance=.2):
+        To determine the range of values where our breakpoint could be we take our
+
+        :param posterior_prob:
+        :param ML:
+        :return:
+        """
+
+
+
+        intervals = np.zeros(shape=(3,2))
+
+        for chromosome in range(3):
+            prediction = int(ML_ind[0][chromosome])
+            switch = int(ML_switch[0][chromosome])
+            interval = -10
+            if switch == 0:
+                alt_switch = 1
+            else:
+                alt_switch = 0
+
+            ##### Leftmost interval end point
+            while interval < np.log(threshold): #Iterate through the left of the viterbi state change until we reach a .99 probability of the alternative state
+                interval = posterior_prob[chromosome][:,prediction][alt_switch]
+                prediction = prediction - 1
+                if prediction <= 0: #if we reach the end of the SNPs w/o reaching our condition break at the end
+                    prediction = 0
+                    break
+            interval_endpoint_left = prediction
+
+            ##### Rightmost interval end point
+            interval = -10
+            prediction = int(ML_ind[0][chromosome]) #Iterate through the right side of the viterbi state change until we reach a .99 probability of the changed state
+            while interval < np.log(threshold):
+                interval = posterior_prob[chromosome][:, prediction][switch]
+                prediction = prediction + 1
+                if prediction >= len(posterior_prob[chromosome][0,:]):
+                    prediction = len(posterior_prob[chromosome][0,:]) - 1
+                    break
+            interval_endpoint_right = prediction
+
+            intervals[chromosome] = np.asarray([interval_endpoint_left, interval_endpoint_right])
+
+
+        return intervals
+
+    def cluster_RBPs(self, predictions, snp_pos, distance=.1):
         """
         An algorithm for clustering our 3 dimensional points in space.
 
         Clusters will be called by a maximum distance cut off predetermined by the input parameters of this function.
-        I have designed the function to have 3 seperate minimum distance parameters for each chromosome, but the way that
-        the distance in 3d space is formulated I don't think it will make that much of a distance.
-
+        Distance parameter is in Mb and may be dependent on the SNP density of the single cell sequences.
         Once you have the distances computed then we must simply aglomerate all of the individuals that are called from the same breakpoints
 
 
@@ -698,18 +754,50 @@ class analyzeSEQ:
 
         #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
         #If clusters have similar breakpoints but different ordering then they are distinct individuals
+        de_cluster = {}
         for clust in all_clusters.keys():
             if len(all_clusters[clust]) > 1:
                 #Check viterbi switching of each:
                 switches = [tuple(snp_pos[ID]) for ID in all_clusters[clust]]
+
                 if len(set(switches)) == 1:#If all points in the cluster also have the same switch from P1, P2 or vice versa then we are likely calling our clusters correctly.
                     pass
-                else:
-                    print(all_clusters[clust])
+                else: #Decluster the incorrect clusters
 
-        #Clusters
+                    #There may be a subset of individuals of this cluster that clustered correctly so decluster based on the switches
+                    sub_clusters = {switch_key:[] for switch_key in switches}
+                    for ID in all_clusters[clust]:
+                        sub_clusters[tuple(snp_pos[ID])].append(ID)
 
+                    #Now the we have determined the subsets of individuals in these sub clusters we will create a new cluster for each subcluster
+                    sorted_subCluster_keys = sorted(list(sub_clusters.keys()))#order dict.keys() so maintain ordering across iteration
+                    de_cluster[clust] = sub_clusters[sorted_subCluster_keys[0]] #sub_cluster 1 is arbitrarily the original cluster
+                    for sc in range(1, len(sub_clusters.keys())):
+                        clust_id = len(all_clusters.keys()) + sc
+                        de_cluster[clust_id] = sub_clusters[sorted_subCluster_keys[sc]]
+         #Iterated through all of the clusters that must be de_clustered and stored them in another table now we will fix our all_clusters table
+        for dc in de_cluster.keys():
+            all_clusters[dc] = de_cluster[dc]
 
+        #Clusters are now called and corrected for easy errors now lets return this tabular information
+
+        return all_clusters
+
+    def avgInterval(self, snp_matrix, interval):
+        chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
+        chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
+        chr_x = snp_matrix[4][:, 0] / 1000000
+        all_chr_arms = [chr_2, chr_3, chr_x]
+
+        genome_distance = 0
+        for arm in range(3):
+            left_interval = all_chr_arms[arm][int(interval[arm][0])]
+            right_interval = all_chr_arms[arm][int(interval[arm][1])]
+            genome_distance += abs(left_interval - right_interval)
+
+        avg_distance = genome_distance/3
+
+        return avg_distance
 def polarize_SNP_array(ref, snp):
 
 
@@ -739,6 +827,7 @@ def polarize_SNP_array(ref, snp):
 
 
 
+
 def train():
     #Use every other simulated data set to train
 
@@ -751,38 +840,44 @@ def train():
     print(pi_P2)
 
 
-def detect_simulated(snp):
+def singleThread(snp):
 
     snp_path, snp_file = os.path.split(snp)
     myAnalysis = analyzeSEQ()
     myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
-    #true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/", tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/Barbash_lab/mDrive/", tsv="out_crossovers.tsv")
 
     ###### Instaniate arrays #####
     cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
-    cell_prediction_indices = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
+    cell_prediction_switches = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
 
     ###### Perform analysises on sub sampled SNP arrays ####
     #Simulate coverage in 20,000 - 50,000 unique reads/cell
-    #
-    #cov_values = np.random.exponential(.015, len(myAnalysis.polarized_samples))
-    cov_values = np.random.uniform(.008, .02, len(myAnalysis.polarized_samples))
+    #Given that this cross has a SNP ~200 bp apart and a read spans 75bp we should sample like 1 snp every ~2.5 reads
+    #So we should see 8,000 - 20,000 SNPs per genome
 
-    #for i in range(5):
-    #    print(len(myAnalysis.polarized_samples[0][i]))
+
     #Predict BPs
 
     index = 0
+    sample_distAvg = 0
     for cell in myAnalysis.polarized_samples:
-        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov_values[index])
+        cov = int(np.random.exponential(14000))
+        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov)
+        #sub_sampling = cell
         cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-        ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+        ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
         cell_predictions[index] = np.asarray(ML_predicts)
-        cell_prediction_indices[index] = np.asarray(ML_indices)
+        cell_prediction_switches[index] = np.asarray(ML_switches)
+        posterior = myAnalysis.hmmFwBw(sub_sampling)
+        ML_intervals = myAnalysis.calc_interval(posterior, ML_indices, ML_switches, threshold=.99)
+        sample_distAvg += myAnalysis.avgInterval(sub_sampling, ML_intervals)
+        #myAnalysis.draw(posterior, sub_sampling, cell_predictions[index], true_CO[index], ML_intervals, title='ID:{0}_{1}_markers'.format(index+1,cov))
         index += 1
+    sample_distAvg = sample_distAvg/index
 
     #Cluster the cells based on RBPs and a minimum distance
-    myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_indices)
+    clusters = myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches, distance=sample_distAvg)
 
 
 
@@ -790,39 +885,40 @@ def hmm_Testing():
     #Going to design a function test my viterbi decoding at an exhaustive regime of coverage
     myAnalysis = analyzeSEQ()
     myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path='/home/iskander/Documents/MEIOTIC_DRIVE/',
-                                                             snp_array='polarized_simulations.npy', encoding='latin1')
-    true_CO = myAnalysis.readCO(path="/home/iskander/Documents/MEIOTIC_DRIVE/",
-                                tsv="DGRP_882_129_simulations_3_19_19_crossovers.tsv")
+                                                             snp_array='POLARIZED_out.npy', encoding='latin1')
+
 
     all_cellArray = []
     predict_array = np.zeros(shape=(100, 3))
-
+    interval_array = np.zeros(shape=(100, 6))
     cell_index = 0
     index = 0
     cell = myAnalysis.polarized_samples[0]
-    for test in range(1,101):
+    for test in range(100):
 
 
-        cov = .05/100 * test
+        cov = 8000 - 80*test
         sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov)
         cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-        ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+        ML_predicts, ML_indices, ML_switches = myAnalysis.decode(cell_pointers, sub_sampling)
         predict_array[index] = ML_predicts
+        posterior = myAnalysis.hmmFwBw(sub_sampling)
+        ML_intervals = myAnalysis.calc_interval(posterior, ML_indices, ML_switches, threshold=.99)
 
         index += 1
     cell_index += 1
 
-    np.save(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/','coverage_regimes.npy'), predict_array)
+    np.save(os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/','coverage_regimes_intervals.npy'), predict_array)
 
 
 
 def multiThreaded(cell_snp):
-    cov = np.random.uniform(.008, .02) #Sub sample the SNPs to simulate the low coverage
+    cov = int(np.random.exponential(14000))  #Sub sample the SNPs to simulate the low coverage
     sub_sampling = myAnalysis.subSample_SNP(cell_snp, sampling=cov)
     cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-    ML_predicts, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+    ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
 
-    return ML_predicts, ML_indices
+    return ML_predicts, ML_switches, ML_indices
 
 
 
@@ -834,7 +930,7 @@ if __name__ == '__main__':
     else:
         if myArgs.args.threads == 0:
             #### Single thread ######
-            detect_simulated(snp=myArgs.args.snp)
+            singleThread(snp=myArgs.args.snp)
         else:
             #### Multithreaded ####
             snp_path, snp_file = os.path.split(myArgs.args.snp)
@@ -846,13 +942,16 @@ if __name__ == '__main__':
             #Run the functions
             with Pool(processes=myArgs.args.threads) as myPool:
                 ML_result = myPool.map(multiThreaded, myAnalysis.polarized_samples)
+                posterior_probs = myPool.map(myAnalysis.hmmFwBw, myAnalysis.polarized_samples)
 
             for pred in range(len(ML_result)):
                 cell_predictions[pred] = ML_result[pred][0]
-                cell_prediction_switches[pred] = ML_result[pred][0]
+                cell_prediction_switches[pred] = ML_result[pred][1]
 
             #Cluster method:
-            myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches)
+            clusters = myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches)
 
     end = time.time()
-    print(end-start)
+    hours, rem = divmod(end - start, 3600)
+    minutes, seconds = divmod(rem, 60)
+    sys.stdout.write("Time elapsed: {:0>2}:{:0>2}:{:05.2f}\n".format(int(hours), int(minutes), seconds))
