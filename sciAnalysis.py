@@ -89,12 +89,6 @@ class CommandLine():
 
 
 
-"""
-
-A program for analyzing single cell data.
-
-"""
-
 
 class analyzeSEQ:
 
@@ -180,7 +174,7 @@ class analyzeSEQ:
         return trans_prob
 
     def decode(self, pointers, snp_matrix):
-
+        sys.stdout.write('Decoding maximum likelihood path...\n')
         rbp_positions= np.zeros(shape=(1,3)) #chr2, chr3, chrx
         rbp_switches= np.zeros(shape=(1,3))
         rbp_indices = np.zeros(shape=(1, 3))
@@ -202,9 +196,11 @@ class analyzeSEQ:
                     rbp_switches[0][chr_index] = traceback[position]
 
             chr_index += 1
-
+        sys.stdout.write('Recombination breakpoints predicted!\n')
         return rbp_positions, rbp_switches, rbp_indices
     def hmmFwBw(self, snp_input):
+
+        sys.stdout.write('Calculating posterior probability of HMM...\n')
         states = ['p1', 'p2']
         chr_posteriors = []
 
@@ -216,7 +212,7 @@ class analyzeSEQ:
 
 
         # Fwd Bckwd
-
+        sys.stdout.write('Computing forward-backward algorithm...\n')
         for chrom in range(0, 5, 2):  # consider each chromosome as a single sequence
             if chrom != 4:
                 chrom_length = len(snp_input[chrom]) + len(snp_input[chrom + 1])
@@ -307,7 +303,7 @@ class analyzeSEQ:
             chr_posteriors.append(posteriorMatrix)
 
 
-
+        sys.stdout.write('Posterior probability matrix constructed.\n')
         return chr_posteriors
     def draw(self, posterior_matrix, snp_matrix, predicted_rbps, truth, interval, title='TestID'):
         chr_decoding = {0:'Chr2', 1:'Chr3', 2:'ChrX'}
@@ -371,6 +367,8 @@ class analyzeSEQ:
         :param snp_input:
         :return:
         """
+
+        sys.stdout.write('Computing Viterbi decoding through HMM state space...\n')
 
         states = ['p1', 'p2']
         arm_pointers = []
@@ -591,9 +589,10 @@ class analyzeSEQ:
 
 
     def load_SNP_array(self, snp_array, path, encoding='UTF-8'):
+
         snp_File = os.path.join(path, snp_array)
         SNPs = np.load(snp_File, encoding=encoding, allow_pickle=True)
-
+        sys.stdout.write('SNP input loaded...\n')
         return SNPs
 
 
@@ -686,7 +685,7 @@ class analyzeSEQ:
         """
 
 
-
+        sys.stdout.write('Calculating intervals around recombination breakpoint with posterior probability threshold of {0}.\n'.format(threshold))
         intervals = np.zeros(shape=(3,2))
 
         for chromosome in range(3):
@@ -736,7 +735,7 @@ class analyzeSEQ:
         """
 
 
-
+        sys.stdout.write('Clustering individuals by {0} Mb distance...\n'.format(distance))
         #Cluster by a min distance between points:
         cluster_pred = fclusterdata(predictions, distance , criterion='distance')
 
@@ -754,6 +753,7 @@ class analyzeSEQ:
 
         #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
         #If clusters have similar breakpoints but different ordering then they are distinct individuals
+        sys.stdout.write('Found initial {0} clusters.\n Checking for errors...\n'.format(len(all_clusters.keys())))
         de_cluster = {}
         for clust in all_clusters.keys():
             if len(all_clusters[clust]) > 1:
@@ -775,15 +775,23 @@ class analyzeSEQ:
                     for sc in range(1, len(sub_clusters.keys())):
                         clust_id = len(all_clusters.keys()) + sc
                         de_cluster[clust_id] = sub_clusters[sorted_subCluster_keys[sc]]
-         #Iterated through all of the clusters that must be de_clustered and stored them in another table now we will fix our all_clusters table
+        #Iterated through all of the clusters that must be de_clustered and stored them in another table now we will fix our all_clusters table
         for dc in de_cluster.keys():
             all_clusters[dc] = de_cluster[dc]
 
+        sys.stdout.write('After checking errors found a total of {0} clusters...\n'.format(len(all_clusters.keys())))
         #Clusters are now called and corrected for easy errors now lets return this tabular information
-
         return all_clusters
 
     def avgInterval(self, snp_matrix, interval):
+        """
+        Calculate the average size of our posterior prob intervals for all RBP predictions.
+
+        :param snp_matrix:
+        :param interval:
+        :return:
+        """
+
         chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
         chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
         chr_x = snp_matrix[4][:, 0] / 1000000
@@ -798,6 +806,44 @@ class analyzeSEQ:
         avg_distance = genome_distance/3
 
         return avg_distance
+
+    def filterNaN(self, snp_input):
+        """
+        This method cleans up the SNPs that are missing from our input and outputs only the present data structures.
+
+        :param snp_input:
+        :return:
+        """
+        chroms = ['2L', '2R', '3L', '3R', 'X']
+        sys.stdout.write('Filtering missing data...\n')
+        clean_Cell = []
+        total_markers = 0
+        total_missing = 0
+        for chrom in range(5):
+            #Determine where the missing data is:
+            missing_data = np.argwhere(np.isnan(snp_input[chrom][:,1]))
+            clean_chrom = np.delete(snp_input[chrom], missing_data, 0)
+            clean_Cell.append(clean_chrom)
+            total_markers += len(snp_input[chrom][:,1])
+            total_missing += len(missing_data)
+            sys.stdout.write('For chromosome {2}: {0} markers missing out of {1} total..\n'.format(len(missing_data), len(snp_input[chrom][:,1]), chroms[chrom]))
+        clean_Cell = np.asarray(clean_Cell)
+
+        sys.stdout.write('For genome: {0} markers missing out of {1} total...\n'.format(total_missing, total_markers))
+        return clean_Cell
+
+    def mergeIndividuals(self, clusters):
+        """
+        After clusters are called we will merge the SNP inputs of the individuals that had clusters with more than one individual.
+        This will fill out some of the missing data and will increase our certainty on the breakpoint predictions when we re-run our HMM and see if we get a change in clustering.
+
+
+        :return:
+        """
+
+        
+
+
 def polarize_SNP_array(ref, snp):
 
 
@@ -807,15 +853,18 @@ def polarize_SNP_array(ref, snp):
     myAnalysis = analyzeSEQ()
 
     reference_genome = myAnalysis.load_reference(path=ref_path, reference=ref_file)
-
+    sys.stdout.write('Reference loaded...\n')
 
     SNP_data = myAnalysis.load_SNP_array(snp_array=snp_file, path=snp_path, encoding='latin1')
 
+
     pol_analysis = []
     ID = 1
+    sys.stdout.write('Preparing to polarize...\n{0} individuals to polarize'.format(len(SNP_data)))
     for simul in SNP_data:
         snp_array = myAnalysis.polarizeSNPs(refSNP=reference_genome, simSNP=simul, sampleID=ID)
         pol_analysis.append(snp_array)
+        sys.stdout.write('{0} individuals out of {1} polarized'.format(ID, len(SNP_data)))
         ID +=1
 
 
@@ -858,13 +907,12 @@ def singleThread(snp):
 
 
     #Predict BPs
-
+    sys.stdout.write('Initializing HMM to detect recombination breakpoints...\n')
     index = 0
     sample_distAvg = 0
     for cell in myAnalysis.polarized_samples:
-        cov = int(np.random.exponential(14000))
-        sub_sampling = myAnalysis.subSample_SNP(cell, sampling=cov)
-        #sub_sampling = cell
+
+        sub_sampling = myAnalysis.filterNaN(cell)
         cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
         ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
         cell_predictions[index] = np.asarray(ML_predicts)
@@ -872,10 +920,11 @@ def singleThread(snp):
         posterior = myAnalysis.hmmFwBw(sub_sampling)
         ML_intervals = myAnalysis.calc_interval(posterior, ML_indices, ML_switches, threshold=.99)
         sample_distAvg += myAnalysis.avgInterval(sub_sampling, ML_intervals)
-        #myAnalysis.draw(posterior, sub_sampling, cell_predictions[index], true_CO[index], ML_intervals, title='ID:{0}_{1}_markers'.format(index+1,cov))
+        #myAnalysis.draw(posterior, sub_sampling, cell_predictions[index], true_CO[index], ML_intervals, title='ID:{0}_test_markers'.format(index+1))
+        sys.stdout.write('Breakpoint predicted for {0} out of {1} individuals.\n'.format(index+1, len(myAnalysis.polarized_samples)))
         index += 1
     sample_distAvg = sample_distAvg/index
-
+    sys.stdout.write('HMM complete...\n Recombination breakpoints detected.\nNow initializing clustering of individuals...\n')
     #Cluster the cells based on RBPs and a minimum distance
     clusters = myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches, distance=sample_distAvg)
 
@@ -913,8 +962,8 @@ def hmm_Testing():
 
 
 def multiThreaded(cell_snp):
-    cov = int(np.random.exponential(14000))  #Sub sample the SNPs to simulate the low coverage
-    sub_sampling = myAnalysis.subSample_SNP(cell_snp, sampling=cov)
+
+    sub_sampling = myAnalysis.filterNaN(snp_input=cell_snp)
     cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
     ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
 
@@ -926,13 +975,17 @@ if __name__ == '__main__':
     start = time.time()
     myArgs = CommandLine()
     if myArgs.args.polarize == True:#If program is called to polarize the SNPs in preprocessing
+        sys.stdout.write('Polarizing SNPs...\nReference:{0}\nSNP input:{1}\n'.format(myArgs.args.reference, myArgs.args.snp))
         polarize_SNP_array(ref=myArgs.args.reference, snp=myArgs.args.snp)
     else:
+        sys.stdout.write('Initializing single cell analysis...\nSNP input:{0}\n'.format(myArgs.args.snp))
         if myArgs.args.threads == 0:
+            sys.stdout.write('Single thread option chosen.\n')
             #### Single thread ######
             singleThread(snp=myArgs.args.snp)
         else:
             #### Multithreaded ####
+            sys.stdout.write('Multithread option chosen with {0} threads.\n'.format(myArgs.args.threads))
             snp_path, snp_file = os.path.split(myArgs.args.snp)
             myAnalysis = analyzeSEQ()
             myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
