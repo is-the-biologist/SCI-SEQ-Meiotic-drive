@@ -1,8 +1,8 @@
+from __future__ import division
 import os
 import csv
 import numpy as np
 import random
-
 import argparse
 
 """
@@ -113,21 +113,26 @@ class simulateSEQ:
         self.chromosomes = ('2L', '2R', '3L', '3R', 'X')
         self.heterochromatin = {
         #A map of the freely recombining intervals of euchromatin within each drosophila chromosome arm in Mb
-            '2L': (0.53, 18.87),
-            '2R': (1.87, 20.87),
-            '3L':(0.75, 19.02),
-            '3R':(2.58, 27.44),
-            'X':(1.22, 21.21)
+            0: (0.53, 18.87),
+            1: (1.87, 20.87),
+            2:(0.75, 19.02),
+            3:(2.58, 27.44),
+            4:(1.22, 21.21)
 
         }
+
+
         self.num_mapping = {0:('2L', '2R'),
                      1:('3L', '3R'),
                      2:('X')
                     }
-        self.chr_mapping = {'2L':0, '2R':1, '3L':2, '3R':3, 'X':4}
+        self.chr_mapping = {'0':'2L', '1':'2R', '2':'3L', '3':'3R', '4':'X'}
         self.simulated_crossovers = []
         self.err = 0.001 #error rate from illumina sequencer
         self.sim_array = [list() for chr in range(5)]
+
+
+
     def generateSNPreference(self, vcf, path):
         """
         We are going to construct a numpy array with the format as follows;
@@ -229,204 +234,166 @@ class simulateSEQ:
 
     def load_reference(self, reference, path):
         np_file = os.path.join(path, reference)
-        reference = np.load(np_file)
+        reference = np.load(np_file, allow_pickle=True)
 
         return reference
 
-    def simSNPs(self, breakpoint_index, reference, init_parent, crossover):
-        """
-        The meat and potatoes of the simulation. This function does all the heavy lifting.
-        Essentially it takes in a few parameters, including the location of the crossover and generates a randomly sampled
-        SNP array based on the location of the crossover, the chromosome arm, and the parental gamete.
 
+    def simulateSNP(self, breakpoint, reference, parental, arm):
 
-        :param breakpoint_index:
-        :param reference:
-        :param init_parent:
-        :param crossover:
-        :return:
-        """
+        #Rather than return the alleles for each homozygous or heterozygous segment we will instead simply create a pre-polarized snp array
 
+        if len(breakpoint) == 1:#E1
+            chiasma = breakpoint[0]
 
+            # hom segment
+            if parental == 0:
+                segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma)]
+                P1 = np.zeros(shape=len(segment))
+                hom_segment = np.vstack((segment[:,0], P1)).T
 
+                #het_segment
+                segment = reference[arm][np.where(reference[arm][:,0] > chiasma)]
+                het = np.random.randint(0,2, size= len(segment))
 
+                het_segment = np.vstack((segment[:,0] , het)).T
 
-        snp_positions = reference[breakpoint_index][:, 0]
-        simulated_alleles = []
-        ############### P1 #########################
-        if init_parent == 1:  # When gamete is P1, P2
-            for position in range(len(snp_positions)):
-                error = random.uniform(0,1)
-                if error <= self.err: #Introduce an error rate:
-                    allele = random.randint(0,3)
-                    #simulated_alleles.append([snp_positions[position], allele])
-                else:
-                    if snp_positions[position] >= crossover:#For one arm
-
-                        # Once SNP position reaches crossover event we switch to the other parent to call SNPs
-                        # Now all SNPs are heterozygous so we will choose parent randomly
-                        allele = reference[breakpoint_index][position][random.randint(1, 2)]
-
-                    else:
-
-                        allele = reference[breakpoint_index][position][1]
-
-                simulated_alleles.append([snp_positions[position], allele])
-
-            if breakpoint_index != 4:  # Exclude the X chromosome
-                simulated_alleles_2 = []# For the other arm of the chromosome
-                if breakpoint_index % 2 == 0:  # If the arm being called is on the left
-
-                    alt_arm = breakpoint_index + 1
-                    right_snps = reference[alt_arm][:, 0]
-
-                    for position in range(len(right_snps)):  # Iterate through the right arm of the chromosome and generate heterozygous allele calls
-                        error = random.uniform(0, 1)
-                        if error <= self.err:  # Introduce an error rate:
-                            allele = random.randint(0, 3)
-                            simulated_alleles_2.append([right_snps[position], allele])
-                        else:
-                            simulated_alleles_2.append([right_snps[position], reference[alt_arm][position][random.randint(1, 2)]])
-
-                else:  # If the arm being called is on the right
-                    # The left arm will be homozygous
-                    alt_arm = breakpoint_index - 1
-                    # Homozygous for P1 SNPs
-                    for position in range(len(reference[alt_arm][:,0])):
-                        error = random.uniform(0, 1)
-                        if error <= self.err:  # Introduce an error rate:
-                            allele = random.randint(0, 3)
-                            simulated_alleles_2.append([reference[alt_arm][:,0][position], allele])
-                        else:
-                            allele = reference[alt_arm][position][1]
-                            simulated_alleles_2.append([reference[alt_arm][:,0][position], allele])
+                complete_segment = np.concatenate((hom_segment, het_segment))
+                output_parental = 1
             else:
-                pass
+                segment = reference[arm][np.where(reference[arm][:, 0] > chiasma)]
+                P1 = np.zeros(shape=len(segment))
+                hom_segment = np.vstack((segment[:, 0], P1)).T
+
+                # het_segment
+                segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma)]
+                het = np.random.randint(0, 2, size=len(segment))
+                het_segment = np.vstack((segment[:, 0], het)).T
+
+                output_parental = 0
+                complete_segment = np.concatenate((het_segment, hom_segment))
 
 
-###################### P2 ###########
-        else:  # When gamete is P2, P1
-            for position in range(len(snp_positions)):  # Get alleles of arm that had a crossover event
-                error = random.uniform(0, 1)
-                if error <= self.err:  # Introduce an error rate:
-                    allele = random.randint(0, 3)
-                    #simulated_alleles.append([snp_positions[position], allele])
-                else:
-                    if snp_positions[position] <= crossover:
-                        # Once SNP position reaches crossover event we switch to the other parent to call SNPs
-                        # Now all SNPs are heterozygous so we will choose parent randomly
-                        allele = reference[breakpoint_index][position][random.randint(1, 2)]
-                    else:
-                        allele = reference[breakpoint_index][position][1]
-                simulated_alleles.append([snp_positions[position], allele])
-            # Retrieve the alleles of the arm that did not have the crossover event
 
-            if breakpoint_index != 4:
-                simulated_alleles_2 = []
+        elif len(breakpoint) == 2:#E2
+            chiasma_1 = breakpoint[0]
+            chiasma_2 = breakpoint[1]
+            if parental == 0:
+                # hom segment 1
+                segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma_1)]
+                P1 = np.zeros(shape=len(segment))
+                contig_1 = np.vstack((segment[:, 0], P1)).T
 
-                if breakpoint_index % 2 == 0:  # if arm is on the left right arm will be homozygous for P1
-                    alt_arm = breakpoint_index + 1
+                #het_segment
+                segment_1 = np.where(reference[arm][:, 0] <= chiasma_2)
+                segment_2 = np.where(reference[arm][:, 0] > chiasma_1)
+                seg_intersect = np.intersect1d(segment_1, segment_2)
 
-                    for snps in range(len(reference[alt_arm][:,0])):
-                        error = random.uniform(0, 1)
-                        if error <= self.err:  # Introduce an error rate:
-                            allele = random.randint(0, 3)
-                            simulated_alleles_2.append([reference[alt_arm][:,0][snps], allele])
-                        else:
-                            allele = reference[alt_arm][snps][1]
-                            simulated_alleles_2.append([reference[alt_arm][:, 0][snps], allele])
+                het = np.random.randint(0, 2, size=len(seg_intersect))
+                contig_2 = np.vstack((reference[arm][np.intersect1d(segment_1, segment_2)][:,0], het)).T
 
-                else:  # in this case the left arm will be heterozygous P2/P1
-                    alt_arm = breakpoint_index - 1
-                    left_snps = reference[alt_arm][:, 0]
+                #het_segment = reference[arm][np.intersect1d(segment_1, segment_2)][:, [0,1]]
 
-                    for position in range(len(left_snps)):
-                        error = random.uniform(0, 1)
-                        if error <= self.err:  # Introduce an error rate:
-                            allele = random.randint(0, 3)
-                            simulated_alleles_2.append([left_snps[position], allele])
-                        else:
-                            simulated_alleles_2.append([left_snps[position], reference[alt_arm][position][random.randint(1, 2)]])
+
+                # het_segment
+                segment = reference[arm][np.where(reference[arm][:, 0] > chiasma_2)]
+                P1 = np.zeros(shape=len(segment))
+                contig_3 = np.vstack((segment[:, 0], P1)).T
+
+                output_parental = 0
+
+            else:#When P1/P2 segment is first
+
+                # het segment 1
+                segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma_1)]
+                het = np.random.randint(0, 2, size=len(segment))
+                contig_1= np.vstack((segment[:, 0], het)).T
+
+                # hom_segment
+                segment_1 = np.where(reference[arm][:, 0] <= chiasma_2)
+                segment_2 = np.where(reference[arm][:, 0] > chiasma_1)
+                seg_intersect = np.intersect1d(segment_1, segment_2)
+                P1 = np.zeros(shape=len(seg_intersect))
+                contig_2 = np.vstack((reference[arm][seg_intersect][:, 0], P1)).T
+
+                # het_segment = reference[arm][np.intersect1d(segment_1, segment_2)][:, [0,1]]
+
+                # het_segment_2
+                segment = reference[arm][np.where(reference[arm][:, 0] > chiasma_2)]
+                het = np.random.randint(0, 2, size=len(segment))
+                contig_3 = np.vstack((segment[:, 0], het)).T
+
+                output_parental = 1
+
+            complete_segment = np.concatenate((contig_1, contig_2, contig_3))
+
+        elif len(breakpoint) == 0:#E0
+            if parental == 0:
+                P1 = np.zeros(shape=len(reference[arm][:,0]))
+                complete_segment = np.vstack((reference[arm][:,0], P1)).T
+                output_parental = 0
             else:
-                pass
-
-        if breakpoint_index != 4:  # Special case for X chromosome
-            # Add to our array in the correct indexing
-            self.sim_array[breakpoint_index] = np.asarray(simulated_alleles)
-            self.sim_array[alt_arm] = np.asarray(simulated_alleles_2)
-        else:
-            self.sim_array[breakpoint_index] = np.asarray(simulated_alleles)
-
-    def simRecombinants(self, reference, simID = 1):
-        """
-
-        This function will generate simulated recombinant chromosomes for the downstream analysis.
-
-        Take in the reference numpy arrays and randomly generate recomibination breakpoints for a new recombinant chromosome.
-        We will then generate a second numpy array that will sample off of the recombinant chromosome.
-
-        The SNPs that will appear on the recombinant chromosome are a function of which of diploid chromosomes is being sampled and how the cross was designed.
-
-        For example:
-
-        P1/P2 x P1 --> P1,P2/P1 || P2,P1/P1
-
-        P1 will be the parental reference strain indexed at 1 in the reference array and P2 will be indexed at 2 in the reference array.
-
-        In this case the part of the recombinant chromosome that is P1 homozygous will sample only P1 alleles while the part of the chromosome that would be heterozygous would sample a 50/50 mixture of P1 and P2 alleles.
-        This will be modeled very simply as a uniform probability of sampling either of the alleles when the SNP calls are generated. There is also a probability of sequencing error that would behoove me to include in
-        the simulation model.
-
-        :param reference:
-        :return:
-        """
+                het = np.random.randint(0, 2, size=len(reference[arm][:,0]))
+                complete_segment = np.vstack((reference[arm][:,0], het)).T
+                output_parental = 1
 
 
+        self.sim_array[arm] = complete_segment
+
+        return output_parental
 
 
-        ######Generate recombinant chromosomes
+    def simulateRecombinants(self, reference, simID = 1):
+
         self.sim_array = [list() for chr in range(5)]
-        true_crossovers = [simID]
-        for chromosome in range(3):
-            #Call initial state of chromosome#
-            init_parent = random.randint(1,2)
-
-            #Call recombination breakpoints
-            #Use a drosophila recombination map to generate a model for breakpoints
-
-            #The probability of crossover ocurring at any given locus on the chromosome will be uniformly distributed excluding heterochromatic regions -- this not true, but is a simplifying assumpyion
-            #Each crossover of each gamete will be independent of the other and I am going to exclude the possibility of a double crossover for simplicities sake
-            crossovers =[]
-            for arm in self.num_mapping[chromosome]:
-                distance = self.heterochromatin[arm]
-                crossovers.append(random.randint(distance[0]*1000000, distance[1]*1000000))
-            arm = random.randint(0, len(crossovers)-1) #To simplify my code I am simply calling a crossover event to occur on each arm and then choosing at random which crossover event will happen from either arm
-            crossover = crossovers[arm]
+        indiv_CO_inputs = [simID]
+        #Generate the E value for a chromosome based on the drosophila E-values
+        #E0, E1, E2
+        e_values = [[[0,15], [16, 91], [92,100]], [[0,16], [17, 92], [94,100]], [[0,5], [6, 76], [77, 100]], [[0,12], [13, 79], [80, 100]], [[0,7], [8,56], [57,100]]]
 
 
+        for arm in range(5):
+            breakpoints = []
+            # Call initial state of chromosome#
+            distance = self.heterochromatin[arm]
 
-            #The chromosome now has a crossover event called on a position on an arm, and an initial gamete state (P1 or P2)
-####-----------------------------replacing this with function containing important bit ---------------------#####
+            if arm % 2 == 0:
+                init_parent = np.random.randint(0, 2) #Refresh for every chromosome
+            else:
+                pass
 
+            percentile = np.random.randint(0, 101)
+            for i in range(3):
+                if percentile >= e_values[arm][i][0] and percentile <= e_values[arm][i][1]:
+                    E = i
+                    break
+                else:
+                    pass
 
-            #It is important to note that if our crossover event was on the left arm
-            #Now we will generate our chromosome for our individual
-            breakpoint_index = self.chr_mapping[self.num_mapping[chromosome][arm]]
+            if E == 1:#E1
+                chiasma = random.randint(distance[0] * 1000000, distance[1] * 1000000)
+                breakpoints.append(chiasma)
 
-            true_crossovers.append([self.num_mapping[chromosome][arm], breakpoint_index, init_parent, crossover])
-            self.simSNPs(breakpoint_index= breakpoint_index, reference=reference, init_parent=init_parent, crossover=crossover)
-            ####SNPs have been simulated for this chromosome now we add it to our numpy array###
+            elif E == 2:#E2
+                s = 0
+                while s < 10.5:
+                    chiasma_1 = random.randint(distance[0] * 1000000, distance[1] * 1000000)
+                    chiasma_2 = random.randint(distance[0] * 1000000, distance[1] * 1000000)
+                    s = abs(chiasma_1 - chiasma_2) / 1000000
 
+                breakpoints.append(chiasma_1)
+                breakpoints.append(chiasma_2)
+            else:#E0
+                pass
+            orig_p = init_parent
+            init_parent = self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
+            CO_inputs = [sorted(breakpoints), orig_p, arm]
 
-
-        self.simulated_crossovers.append(true_crossovers)
-        sim_array = np.asarray(self.sim_array)
+            sim_array = np.asarray(self.sim_array)
+            indiv_CO_inputs.append(CO_inputs)
+        self.simulated_crossovers.append(indiv_CO_inputs)
 
         return sim_array
-
-
-
-
 
 
 
@@ -446,13 +413,13 @@ if __name__ == '__main__':
     #simulate.generateSNPreference(path='/home/iskander/Documents/MEIOTIC_DRIVE/', vcf='882_129.snps.vcf')
     reference_alleles = simulate.load_reference(path=os.path.split(myArgs.args.reference)[0], reference=os.path.split(myArgs.args.reference)[1])
 
+
     #Generate several hundred recombinants with some number of multiples
 
     #calculate the expected number of unique cells given the cells and individual arguments:
     E_uniq= int(myArgs.args.individuals * (1- ((myArgs.args.individuals-1) / myArgs.args.individuals)**myArgs.args.cells))
-
     for sim in range(E_uniq):
-        simulated_SNPs = simulate.simRecombinants(reference=reference_alleles, simID=sim+1)
+        simulated_SNPs = simulate.simulateRecombinants(reference=reference_alleles, simID=sim+1)
         all_simulations.append(simulated_SNPs)
 
 
@@ -463,11 +430,12 @@ if __name__ == '__main__':
         crossover = simulate.simulated_crossovers[index]
         simulate.sim_array = [list() for chr in range(5)]
 
-        for chromosome in range(3):
+        for arm in range(1,6):
 
-            simulate.simSNPs(breakpoint_index= crossover[chromosome+1][1], reference=reference_alleles, init_parent=crossover[chromosome+1][2], crossover=crossover[chromosome+1][3])
+            simulate.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental= crossover[arm][1], arm=crossover[arm][2])
 
-        simulate.simulated_crossovers.append(simulate.simulated_crossovers[index])
+
+        simulate.simulated_crossovers.append(crossover)
         all_simulations.append(np.asarray(simulate.sim_array))
 
     all_simulations = np.asarray(all_simulations)
@@ -475,8 +443,36 @@ if __name__ == '__main__':
 
     np.save(myArgs.args.output+'.npy', all_simulations)
 
+
     with open(myArgs.args.output+'_crossovers.tsv', 'w') as myCO:
-        myCO.write('ID\tCHR1\tPOS1\tP1\tCHR2\tPOS2\tP2\tCHR3\tPOS3\tP3\n')
-        for lines in simulate.simulated_crossovers:
-            myCO.write("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}\t{8}\t{9}\n".format(lines[0], lines[1][0], lines[1][3], lines[1][2],lines[2][0], lines[2][3], lines[2][2], lines[3][0], lines[3][3], lines[3][2] ))
+
+        for ind in simulate.simulated_crossovers:
+            ID = str(ind[0])
+            individual = [ID]
+            for arm in range(1,6):
+                #Format the breakpoints
+                bp_str = [str(bp) for bp in ind[arm][0]]
+                breakpoints= ','.join(bp_str)
+
+                chrom_arm = simulate.chr_mapping[str(arm-1)]
+
+                #Format parental haplotypes
+                parents = []
+                p_switch = {0:1, 1:0}
+                #print(chrom_arm)
+                #print(bp_str, str(ind[arm][1]))
+                for p in range(len(bp_str)+1):
+                    if p % 2 == 0:
+                        p_state = str(ind[arm][1])
+                    else:
+                        p_state = str(p_switch[ind[arm][1]])
+                    #print(p_state)
+                    parents.append(p_state)
+                parents = ','.join(parents)
+                field = [chrom_arm, breakpoints, parents]
+
+                individual = individual + field
+            line = '\t'.join(individual)
+            myCO.write(line+'\n')
+
         myCO.close()
