@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 #import random
 import scipy.stats
+from scipy.interpolate import UnivariateSpline
 import time
 import sys
 from scipy.cluster.hierarchy import fclusterdata
@@ -84,6 +85,7 @@ class CommandLine():
                                  help="Number of threads to be specified if multi-threading is to be used.",
                                  default=0)
         self.parser.add_argument("-i", "--interval", type=float, action='store', nargs='?', default = .99)
+        self.parser.add_argument('-d', '--distance', type=float, action='store', nargs='?', default=20)
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
         else:
@@ -123,15 +125,7 @@ class analyzeSEQ:
                        }
         self.transitions_probs ={'p1':{'p1':np.log(1 - self.simple_cM()), 'p2':np.log(self.simple_cM())}, 'p2':{'p1': np.log(self.simple_cM()), 'p2':np.log(1-self.simple_cM())}}
 
-        # manually tune some parameters:
 
-        # myAnalysis.pi_p1_1 = .92
-        # myAnalysis.pi_p1_2 = .075
-        # myAnalysis.pi_p1_3 = .005
-
-        # myAnalysis.pi_p2_1 = .56
-        # myAnalysis.pi_p2_2 = .435
-        # myAnalysis.pi_p2_3 = .005
 
     def get_cM(self, chromosome_arm, mid_point, distance, heterochromatin=((0.53, 18.87),(1.87, 20.87),(0.75, 19.02), (2.58, 27.44),(1.22, 21.21))):
         """
@@ -208,6 +202,7 @@ class analyzeSEQ:
 
         sys.stdout.write('Recombination breakpoints predicted!\n')
 
+        rbp_positions = np.hstack((rbp_positions[0], rbp_positions[1], rbp_positions[2][0:2]))
         return rbp_positions, rbp_switches, rbp_indices
 
     def hmmFwBw(self, snp_input):
@@ -378,7 +373,7 @@ class analyzeSEQ:
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plot_name = os.path.join('/home/iskander/Documents/MEIOTIC_DRIVE/', '{0}.png'.format(title))
         plt.savefig(plot_name, dpi=200)
-        #plt.show()
+        plt.close()
 
     def hmmViterbi(self, snp_input):
 
@@ -735,21 +730,19 @@ class analyzeSEQ:
 
         return intervals
 
-    def cluster_RBPs(self, predictions, snp_pos, distance=.1):
+    def cluster_RBPs(self, predictions, distance=1000):
         """
-        An algorithm for clustering our 3 dimensional points in space.
 
-        Clusters will be called by a maximum distance cut off predetermined by the input parameters of this function.
-        Distance parameter is in Mb and may be dependent on the SNP density of the single cell sequences.
-        Once you have the distances computed then we must simply aglomerate all of the individuals that are called from the same breakpoints
-
+        Hierachical agglomerative distance based clustering is used in this method to cluster individuals based on some set of features
 
         :return:
         """
 
 
-        sys.stdout.write('Clustering individuals by {0} Mb distance...\n'.format(distance))
+        sys.stdout.write('Clustering individuals by {0} distance...\n'.format(distance))
+
         #Cluster by a min distance between points:
+
         cluster_pred = fclusterdata(predictions, distance , criterion='distance')
 
 
@@ -766,34 +759,9 @@ class analyzeSEQ:
 
         #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
         #If clusters have similar breakpoints but different ordering then they are distinct individuals
-        sys.stdout.write('Found initial {0} clusters.\n Checking for errors...\n'.format(len(all_clusters.keys())))
-        de_cluster = {}
-        for clust in all_clusters.keys():
-            if len(all_clusters[clust]) > 1:
-                #Check viterbi switching of each:
-                switches = [tuple(snp_pos[ID]) for ID in all_clusters[clust]]
+        sys.stdout.write('Found {0} clusters.\n'.format(len(all_clusters.keys())))
 
-                if len(set(switches)) == 1:#If all points in the cluster also have the same switch from P1, P2 or vice versa then we are likely calling our clusters correctly.
-                    pass
-                else: #Decluster the incorrect clusters
 
-                    #There may be a subset of individuals of this cluster that clustered correctly so decluster based on the switches
-                    sub_clusters = {switch_key:[] for switch_key in switches}
-                    for ID in all_clusters[clust]:
-                        sub_clusters[tuple(snp_pos[ID])].append(ID)
-
-                    #Now the we have determined the subsets of individuals in these sub clusters we will create a new cluster for each subcluster
-                    sorted_subCluster_keys = sorted(list(sub_clusters.keys()))#order dict.keys() so maintain ordering across iteration
-                    de_cluster[clust] = sub_clusters[sorted_subCluster_keys[0]] #sub_cluster 1 is arbitrarily the original cluster
-                    for sc in range(1, len(sub_clusters.keys())):
-                        clust_id = len(all_clusters.keys()) + sc
-                        de_cluster[clust_id] = sub_clusters[sorted_subCluster_keys[sc]]
-        #Iterated through all of the clusters that must be de_clustered and stored them in another table now we will fix our all_clusters table
-        for dc in de_cluster.keys():
-            all_clusters[dc] = de_cluster[dc]
-
-        sys.stdout.write('After checking errors found a total of {0} clusters...\n'.format(len(all_clusters.keys())))
-        #Clusters are now called and corrected for easy errors now lets return this tabular information
         return all_clusters
 
     def avgInterval(self, snp_matrix, interval):
@@ -833,28 +801,37 @@ class analyzeSEQ:
         clean_Cell = []
         total_markers = 0
         total_missing = 0
+        marker_index = []
         for chrom in range(5):
             #Determine where the missing data is:
-            missing_data = np.argwhere(np.isnan(snp_input[chrom][:,1]))
-            clean_chrom = np.delete(snp_input[chrom], missing_data, 0)
+
+            data = np.argwhere(np.isnan(snp_input[chrom][:, 1]) == False).T[0]
+            marker_index.append(data)
+            clean_chrom = snp_input[chrom][data]
             clean_Cell.append(clean_chrom)
             total_markers += len(snp_input[chrom][:,1])
-            total_missing += len(missing_data)
+            total_missing += (len(snp_input[chrom][:,1]) - len(data))
             #sys.stdout.write('For chromosome {2}: {0} markers missing out of {1} total..\n'.format(len(missing_data), len(snp_input[chrom][:,1]), chroms[chrom]))
         clean_Cell = np.asarray(clean_Cell)
 
         sys.stdout.write('{0} markers present out of {1} total...\n'.format(total_markers - total_missing, total_markers))
         marker_out = total_markers - total_missing
 
-        return clean_Cell, marker_out
+        return clean_Cell, marker_out, marker_index
 
     def computeLikelihoods(self, cluster_IDs):
+        """
+        Impute the missing genotypes based on cluster calls using likelihood ratio test
 
+
+        :param cluster_IDs:
+        :return:
+        """
         str_inds = [str(indiv + 1) for indiv in cluster_IDs]
         sysout = ', '.join(str_inds)
-        sys.stdout.write('Merging individuals {0}\n'.format(sysout))
+        sys.stdout.write('Imputing missing SNPs on individuals {0}\n'.format(sysout))
 
-        merged_genome = []
+        imputed_genotypes = 0
         for arm in range(5):
             merged_arm = self.polarized_samples[cluster_IDs[0]][arm]
             for individual in range(1, len(cluster_IDs)):
@@ -893,12 +870,12 @@ class analyzeSEQ:
 
                 elif likelihood < 0:  # call the site as homozygous and assign a P1 allele to it
                     merged_call = 0
-                arm_calls[:, 1][snp_index] = merged_call
-                snp_index += 1
-            merged_genome.append(arm_calls)
-        merged_genome = np.asarray(merged_genome)
+                #Made imputation of what SNP will be based on missing data now change it in the data structure
+                for individual in range(len(cluster_IDs)):
+                    self.polarized_samples[cluster_IDs[individual]][arm][snp_index] = merged_call
 
-        return merged_genome
+                snp_index += 1
+
 
     def mergeIndividuals(self, clusters, threads=0):
         """
@@ -910,7 +887,7 @@ class analyzeSEQ:
         """
 
         orig_indivs = len(self.polarized_samples)
-        sys.stdout.write('Initializing cluster merge...\n')
+        sys.stdout.write('Initializing genotype imputation...\n')
         merged_clusters = []
         mergeable_clusters = [clusters[mc] for mc in clusters.keys() if len(clusters[mc]) > 1]
 
@@ -929,18 +906,104 @@ class analyzeSEQ:
                 myPool.close()
             ##################################################################
 
-            merged_clusters = np.asarray(merged_clusters)
 
-            #We have finished constructing our new merged genomes now we will delete our old np arrays from our matrix and add our new genomes to it
-            delete_elements = [individual for c in clusters.keys() for individual in clusters[c] if len(clusters[c]) > 1]
 
-            self.polarized_samples = np.delete(self.polarized_samples, delete_elements, 0)
-            self.polarized_samples = np.append(self.polarized_samples, merged_clusters, 0)
+        #new_indivs = len(self.polarized_samples)
+        #sys.stdout.write('Merged {0} individuals into {1} individuals...\n'.format(orig_indivs, new_indivs))
 
-        new_indivs = len(self.polarized_samples)
-        sys.stdout.write('Merged {0} individuals into {1} individuals...\n'.format(orig_indivs, new_indivs))
+        return len(clusters.keys())
 
-        return orig_indivs - new_indivs
+    def extractFeatures(self, posterior, full_snp_matrix, data, ID=1):
+        """
+        Rather than clustering based on recombination breakpoints which could be more prone to error when I miss classify a segment I am going to cluster
+        on a different set of features.
+
+        I am going to use the posterior probability of P1/P1 state at each SNP position as a feature from which to cluster on.
+        Since there is missing data I will use smoothing spline interpolation to impute the missing data.
+
+        Now we can return all of this interpolated data and cluster by each of the SNP features.
+
+        :return:
+        """
+        #Fill out the indices of the SNPs in order for each chromosome
+
+        chr_2 = np.concatenate((full_snp_matrix[0][:, 0], full_snp_matrix[1][:, 0] + 23000000)) / 1000000
+        chr_3 = np.concatenate((full_snp_matrix[2][:, 0], full_snp_matrix[3][:, 0] + 24500000)) / 1000000
+        chr_x = full_snp_matrix[4][:, 0] / 1000000
+        SNP_positions = [chr_2, chr_3, chr_x]
+        predict_chr_arms = [[x for x in range(len(chr_2))], [x for x in range(len(chr_3))],
+                            [x for x in range(len(chr_x))]]
+
+        ###########################################
+
+        #To make the interpolation behave better we will fill out the ends of our chromosome arrays with a smooth line so we get less weird behavior
+
+        #Fill out posteriors first for 2 and 3
+        for i in range(0,3,2):
+
+            #This is a gross little trick to make this iteratable and I'm not happy with it:
+            if i == 0:
+                pos = 0
+            else:
+                pos = 1
+
+
+            right_end = np.asarray([posterior[pos][:,0] for snp in range(data[i][0])]).T
+            left_end = np.asarray([posterior[pos][:,-1] for snp in range(predict_chr_arms[pos][-1] - data[i+1][-1])]).T
+
+            #Added a conditional to this statement to account for when the right or left end make vectors of length 0
+            posterior[pos] = np.hstack((right_end, posterior[pos])) if right_end.size else posterior[pos]
+            posterior[pos] = np.hstack((posterior[pos], left_end)) if left_end.size else posterior[pos]
+            #now fill out the x-axis
+            right_end_snp = [snp for snp in range(data[i][0])]
+            left_end_snp = [snp+predict_chr_arms[pos][-1] for snp in range(predict_chr_arms[pos][-1] - data[i + 1][-1])]
+            data[i] = np.hstack((right_end_snp, data[i]))
+            data[i+1] = np.hstack((data[i+1], left_end_snp))
+
+
+        #X is a special case
+        right_end = np.asarray([posterior[2][:, 0] for snp in range(data[4][0])]).T
+        left_end = np.asarray([posterior[2][:, -1] for snp in range(predict_chr_arms[2][-1] - data[4][-1])]).T
+
+        posterior[2] = np.hstack((right_end, posterior[2])) if right_end.size else posterior[2]
+        posterior[2] = np.hstack((posterior[2], left_end)) if left_end.size else posterior[2]
+
+        # now fill out the x-axis
+        right_end_snp = [snp for snp in range(data[4][0])]
+        left_end_snp = [snp + predict_chr_arms[2][-1] for snp in range(predict_chr_arms[2][-1] - data[4][-1])]
+        data[4] = np.hstack((right_end_snp, data[4], left_end_snp))
+
+        #######
+        chr_2 = np.concatenate((data[0], data[1]+len(full_snp_matrix[0][:,0])))
+        chr_3 = np.concatenate((data[2], data[3] + len(full_snp_matrix[2][:, 0])))
+        training_chr_arms = [chr_2, chr_3, data[4]] #Use the SNP indices as the x-axis and not the position along the chromosome as the interpolation behaves better this way
+
+
+
+
+
+        #Use interpolation to fill out the missing values
+        #This will allow us to impute the log odds of our missing SNPs
+        #fig = plt.figure(figsize=(20, 10))
+        #axs = fig.subplots(3, 1)
+        imputed_odds = []
+        for chrom in range(3):#Use univariate spline to predict the missing values from our observed log odds values
+            log_odds = np.exp(posterior[chrom][0])
+            #chrom_spline = UnivariateSpline(x=training_chr_arms[chrom], y=log_odds)
+            #predict_odds = chrom_spline(predict_chr_arms[chrom])
+            #Method for implementing a linear interpolation instead of spline
+            predict_odds = np.interp(x=predict_chr_arms[chrom], xp= training_chr_arms[chrom], fp=log_odds)
+
+            imputed_odds = np.hstack((imputed_odds, predict_odds))
+
+
+            #sns.lineplot(SNP_positions[chrom], predict_odds, ax=axs[chrom])
+            #sns.scatterplot(training_chr_arms[chrom], log_odds, ax=axs[chrom])
+
+        #plt.savefig('/home/iskander/Documents/MEIOTIC_DRIVE/ID:{0}_linear_interpol.png'.format(ID), dpi=300)
+        #plt.close()
+        return np.asarray(imputed_odds)
+
 
 def polarize_SNP_array(ref, snp):
 
@@ -992,10 +1055,10 @@ def singleThread():
 
 
     ###### Instaniate arrays #####
-    cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3, 4))
+    cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 10))
     cell_prediction_switches = np.zeros(shape=(len(myAnalysis.polarized_samples), 3, 4))
 
-    true_CO = myAnalysis.readCO(path='', tsv='fuck_crossovers.tsv')
+    true_CO = myAnalysis.readCO(path='', tsv='out_crossovers.tsv')
     ###### Perform analysises on sub sampled SNP arrays ####
     #Simulate coverage in 20,000 - 50,000 unique reads/cell
     #Given that this cross has a SNP ~200 bp apart and a read spans 75bp we should sample like 1 snp every ~2.5 reads
@@ -1006,35 +1069,45 @@ def singleThread():
     sys.stdout.write('Initializing HMM to detect recombination breakpoints...\n')
     index = 0
     PI_dist = []
+    snp_len = 0
+    for length in range(5):
+        snp_len += len(myAnalysis.polarized_samples[0][length][:,0])
+    all_features = np.zeros(shape=(len(myAnalysis.polarized_samples), snp_len))
+
     sample_distAvg = 0
     for cell in myAnalysis.polarized_samples:
+        run_name = myArgs.args.snp.split('.')[0]
 
-        sub_sampling, markers = myAnalysis.filterNaN(cell)
-        cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-        ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
-        cell_predictions[index] = np.asarray(ML_predicts)
-        cell_prediction_switches[index] = np.asarray(ML_switches)
+        sub_sampling, markers, SNP_index = myAnalysis.filterNaN(cell)
+        #cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
+        #ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+
+        #cell_predictions[index] = np.asarray(ML_predicts)
+        #cell_prediction_switches[index] = np.asarray(ML_switches)
         posterior = myAnalysis.hmmFwBw(sub_sampling)
+        SNP_features = myAnalysis.extractFeatures(posterior, cell, SNP_index, ID=index+1)
+        all_features[index]=SNP_features
+
         #ML_intervals = myAnalysis.calc_interval(posterior, ML_indices, ML_switches, threshold=myArgs.args.interval)
         #print(ML_intervals)
         #dist = myAnalysis.avgInterval(sub_sampling, ML_intervals)
         #PI_dist.append(dist)
         #sample_distAvg += dist
 
-        myAnalysis.draw(posterior, sub_sampling, cell_predictions[index], true_CO[index], markers, title='ID:{0}_new'.format(index+1))
+        #myAnalysis.draw(posterior, sub_sampling, cell_predictions[index], true_CO[index], markers, title='ID:{0}_{1}'.format(index+1,run_name ))
         sys.stdout.write('Breakpoint predicted for {0} out of {1} individuals.\n'.format(index+1, len(myAnalysis.polarized_samples)))
         index += 1
-        break
-    sample_distMode = scipy.stats.mode(PI_dist)[0][0]
-    sample_distAvg = sample_distAvg / index
-    sys.stdout.write('HMM complete...\n Recombination breakpoints detected.\nNow initializing clustering of individuals...\n')
+
+
+    sys.stdout.write('Initializing clustering of individuals...\n')
+
 
 
     #Cluster the cells based on RBPs and a minimum distance
-#    clusters = myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches, distance=sample_distAvg)
-#    change_indiv = myAnalysis.mergeIndividuals(clusters)
+    clusters = myAnalysis.cluster_RBPs(predictions=all_features, distance=myArgs.args.distance)
+    change_indiv = myAnalysis.mergeIndividuals(clusters)
 
- #   return change_indiv
+    return change_indiv
 
 def hmm_Testing():
     #Going to design a function test my viterbi decoding at an exhaustive regime of coverage
@@ -1070,41 +1143,44 @@ def hmm_Testing():
 
 
 def wrapProcess():
-    cell_predictions = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
-    cell_prediction_switches = np.zeros(shape=(len(myAnalysis.polarized_samples), 3))
-    PI_dist = []
+
+    #Data structures
+
+    snp_len = 0
+    for length in range(5):
+        snp_len += len(myAnalysis.polarized_samples[0][length][:,0])
+    all_features = np.zeros(shape=(len(myAnalysis.polarized_samples), snp_len))
 
     # Run the functions
     myPool = Pool(processes=myArgs.args.threads)
     ML_result = myPool.map(multiThreaded, myAnalysis.polarized_samples)
     myPool.close()
 
-    sample_distAvg = 0
+
     for pred in range(len(ML_result)):
-        cell_predictions[pred] = ML_result[pred][0]
-        cell_prediction_switches[pred] = ML_result[pred][1]
-        dist = ML_result[pred][2]
-        PI_dist.append(dist)
-        sample_distAvg += dist
-    sample_distMode = scipy.stats.mode(PI_dist)[0][0] #Get mode of distribution of intervals for distance parameter
-    sample_distAvg = sample_distAvg / len(ML_result)
+        all_features[pred] = ML_result[pred]
 
     # Cluster method:
-    clusters = myAnalysis.cluster_RBPs(predictions=cell_predictions, snp_pos=cell_prediction_switches, distance=sample_distAvg)
+    clusters = myAnalysis.cluster_RBPs(predictions=all_features, distance=myArgs.args.distance)
     delta_indiv = myAnalysis.mergeIndividuals(clusters)
 
     return delta_indiv
 
 def multiThreaded(cell_snp):
 
-    sub_sampling, markers = myAnalysis.filterNaN(snp_input=cell_snp)
-    cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
-    ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
-    posterior_probs = myAnalysis.hmmFwBw(sub_sampling)
-    ML_intervals = myAnalysis.calc_interval(posterior_probs, ML_indices, ML_switches, threshold=myArgs.args.interval)
-    dist_avg = myAnalysis.avgInterval(sub_sampling, ML_intervals)
+    sub_sampling, markers, SNP_index = myAnalysis.filterNaN(snp_input=cell_snp)
 
-    return ML_predicts, ML_switches, dist_avg
+    #cell_pointers = myAnalysis.hmmViterbi(snp_input=sub_sampling)
+    #ML_predicts, ML_switches, ML_indices = myAnalysis.decode(cell_pointers, sub_sampling)
+
+    posterior_probs = myAnalysis.hmmFwBw(sub_sampling)
+    SNP_features = myAnalysis.extractFeatures(posterior_probs, cell_snp, SNP_index)
+
+
+    #ML_intervals = myAnalysis.calc_interval(posterior_probs, ML_indices, ML_switches, threshold=myArgs.args.interval)
+    #dist_avg = myAnalysis.avgInterval(sub_sampling, ML_intervals)
+
+    return SNP_features
 
 
 
@@ -1126,7 +1202,11 @@ if __name__ == '__main__':
             #### Single thread ######
             delta = np.inf
             while delta != 0:
-                delta = singleThread()
+                cluster_num = singleThread()
+                if delta == np.inf:
+                    delta = cluster_num
+                else:
+                    delta = delta - cluster_num
         else:
             #### Multithreaded ####
             sys.stdout.write('Multithread option chosen with {0} threads.\n'.format(myArgs.args.threads))
@@ -1137,7 +1217,11 @@ if __name__ == '__main__':
             #####Iterate until convergence####
             delta = np.inf
             while delta != 0:
-                delta = wrapProcess()
+                cluster_num = wrapProcess()
+                if delta == np.inf:
+                    delta = cluster_num
+                else:
+                    delta = delta - cluster_num
     end = time.time()
     hours, rem = divmod(end - start, 3600)
     minutes, seconds = divmod(rem, 60)
