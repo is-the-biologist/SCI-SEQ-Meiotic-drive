@@ -69,8 +69,6 @@ class CommandLine():
         self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?", help="The reference genome numpy file to draw SNPs from",
                                  default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
         self.parser.add_argument('-o', '--output', type=str, action='store', nargs='?', help='The name of your output file', default='out')
-        self.parser.add_argument('-g', '--genotype', type=int, action='store', nargs='?', default=2000)
-        self.parser.add_argument('-a', '--arm', type=int, action='store', nargs='?', default=0)
         self.parser.add_argument('-s', '--subsample', type=str, action='store', nargs='?', default= False)
         self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=2000)
 
@@ -198,7 +196,17 @@ class simulateSEQ:
 
             myMap.close()
 
+    def simCollisions(self):
 
+        """
+        This method will simulate true collisions where two cells share a barcode so half of the reads will come from each cell.
+        In the case where two cells coincidentally got the same bar code via a random combinatorial process then that cell would look to have simply double the number of reads,
+        but if there was a doublet via a sticky-ness process then the number of reads would be the same.
+
+        This happens at a rate of 10-11% let's call it a flat 10% for simplicities sake. To simulate this we will generate two cells at random and sample SNPs off of each cell at random and merge the SNPs
+        :return:
+        """
+        pass
 
     def computeBreakpoint(self, arm):
 
@@ -237,7 +245,7 @@ class simulateSEQ:
                 self.cm_bins[arm][int(field[1])] = [float(field[2]), float(field[3])]
             myMap.close()
 
-    def size_Genotype(self, genotype, simulations, geno_arm, size = 2):
+    def size_Genotype(self, genotype, simulations, geno_arm, size = 5):
         """
         This function will generate a size dependent genotype issue by increasing the number of cells contributed by individuals with a pre-specified SNP
 
@@ -248,7 +256,7 @@ class simulateSEQ:
         :return:
         """
 
-
+        body_size = np.random.randint(1, size+1)
         duplicates = []
         index = 0
         for cell in simulations:
@@ -256,7 +264,7 @@ class simulateSEQ:
 
             if len(set(geno_block)) == 1: #If we are a P1 homozygote for this block we will have a size increase
                 crossover = self.simulated_crossovers[index]
-                for sim in range(size-1):
+                for sim in range(body_size-1):
 
                     self.sim_array = [list() for chr in range(5)]
                     for arm in range(1, 6):
@@ -582,19 +590,11 @@ def sample_lowCoverage(snp):
 
     snp_bounds = mySimulation.get_SNP_bounds(mySimulation.SNP_samples[0])
 
-    ssample = []
-
 
     for cell in range(len(mySimulation.SNP_samples)):
 
         cov = max(300, int(np.random.exponential(myArgs.args.coverage)))
-
-
-
         mySimulation.SNP_samples[cell] = mySimulation.NA_subsampler(snp_input=mySimulation.SNP_samples[cell], sampling=cov, all_subsamples=snp_bounds)
-
-
-
 
     output = os.path.join(path, 'SPARSE_'+file)
     np.save(output, mySimulation.SNP_samples)
@@ -632,6 +632,7 @@ if __name__ == '__main__':
 
         geno_arm = np.random.randint(0, 5)
         genotype = np.random.randint(0, len(reference_alleles[geno_arm][:,0]))
+
         with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
             mySNP.write("{0}\t{1}\n".format(simulate.chr_mapping[str(geno_arm)], reference_alleles[geno_arm][:,0][genotype]))
         mySNP.close()
