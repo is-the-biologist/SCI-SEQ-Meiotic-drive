@@ -64,13 +64,14 @@ class CommandLine():
         )  ###Add or remove optional arguments here
         self.parser.add_argument("-i", "--individuals", type=int, action="store", nargs="?", help="Input the number of individuals to be sampled from.",
                                  default=2000)
-        self.parser.add_argument("-c", "--cells", type=int, action="store", nargs="?", help="The number of cells to be simulated.",
-                                 default=600)
+        self.parser.add_argument("-w", "--wells", type=int, action="store", nargs="?", help="The number of wells to be simulated. 20-25 cells per well.",
+                                 default=96)
         self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?", help="The reference genome numpy file to draw SNPs from",
-                                 default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
+                                 default='/home/iskander/Documents/Barbash_lab/mDrive/ATAC_882_129.snp_reference.npy')
         self.parser.add_argument('-o', '--output', type=str, action='store', nargs='?', help='The name of your output file', default='out')
         self.parser.add_argument('-s', '--subsample', type=str, action='store', nargs='?', default= False)
         self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=2000)
+        self.parser.add_argument('-d', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
 
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
@@ -245,7 +246,7 @@ class simulateSEQ:
                 self.cm_bins[arm][int(field[1])] = [float(field[2]), float(field[3])]
             myMap.close()
 
-    def size_Genotype(self, genotype, simulations, geno_arm, size = 5):
+    def size_Genotype(self, genotype, simulations, geno_arm, size_distortion):
         """
         This function will generate a size dependent genotype issue by increasing the number of cells contributed by individuals with a pre-specified SNP
 
@@ -256,22 +257,26 @@ class simulateSEQ:
         :return:
         """
 
-        body_size = np.random.randint(1, size+1)
+
         duplicates = []
+
+        distorted_indivs = []
         index = 0
         for cell in simulations:
             geno_block = cell[geno_arm][genotype-5:genotype+5][:,1]
 
             if len(set(geno_block)) == 1: #If we are a P1 homozygote for this block we will have a size increase
-                crossover = self.simulated_crossovers[index]
-                for sim in range(body_size-1):
-
-                    self.sim_array = [list() for chr in range(5)]
-                    for arm in range(1, 6):
-                        self.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental=crossover[arm][1], arm=crossover[arm][2])
-                    self.simulated_crossovers.append(crossover)
-                    duplicates.append(self.sim_array)
+                distorted_indivs.append(self.simulated_crossovers[index])
             index += 1
+
+        for sim in np.random.choice(a=len(distorted_indivs), size=size_distortion): #Randomly choose which individuals have a size distortion
+            crossover = distorted_indivs[sim]
+            self.sim_array = [list() for chr in range(5)]
+            for arm in range(1, 6):
+                self.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental=crossover[arm][1], arm=crossover[arm][2])
+            self.simulated_crossovers.append(crossover)
+            duplicates.append(self.sim_array)
+
         return duplicates
 
 
@@ -625,7 +630,14 @@ if __name__ == '__main__':
         #Generate several hundred recombinants with some number of multiples
 
         #calculate the expected number of unique cells given the cells and individual arguments:
-        E_uniq= int(myArgs.args.individuals * (1- ((myArgs.args.individuals-1) / myArgs.args.individuals)**myArgs.args.cells))
+
+        noisy_cells = np.random.randint(low=myArgs.args.wells*20, high = (myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
+
+        E_uniq = len(set(np.random.choice(a=myArgs.args.individuals, size=noisy_cells))) #Calculate the number of unique cells by using a noisy approach through literally sampling them
+        size_distortion = int(myArgs.args.size_distortion*E_uniq) # To account for a say 5% different cell contributions I will subtract 5% from the number of unique individuals
+        #E_uniq= int(myArgs.args.individuals * (1- ((myArgs.args.individuals-1) / myArgs.args.individuals)**myArgs.args.cells))
+        E_uniq = E_uniq - size_distortion
+
         for sim in range(E_uniq):
             simulated_SNPs = simulate.simulateRecombinants(reference=reference_alleles, simID=sim+1)
             all_simulations.append(simulated_SNPs)
@@ -636,13 +648,14 @@ if __name__ == '__main__':
         with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
             mySNP.write("{0}\t{1}\n".format(simulate.chr_mapping[str(geno_arm)], reference_alleles[geno_arm][:,0][genotype]))
         mySNP.close()
-        size_duplicates = simulate.size_Genotype(genotype=genotype, simulations=all_simulations, geno_arm= geno_arm) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
+        size_duplicates = simulate.size_Genotype(genotype=genotype, simulations=all_simulations, geno_arm= geno_arm, size_distortion= size_distortion) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
 
 
         all_simulations = all_simulations + size_duplicates
 
         #Generate at random which individuals will be sampled multiple times
-        for collision in range(myArgs.args.cells - len(size_duplicates) - E_uniq):
+
+        for collision in range(noisy_cells - (len(size_duplicates) + E_uniq)):
             index = random.randint(0, len(simulate.simulated_crossovers)-1)
             crossover = simulate.simulated_crossovers[index]
             simulate.sim_array = [list() for chr in range(5)]
