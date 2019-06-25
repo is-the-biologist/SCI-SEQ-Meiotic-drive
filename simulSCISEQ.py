@@ -590,51 +590,70 @@ class simulateSEQ:
         return snp_index
 
 
-    def Distorter_chiasma(self, init_parent, E, driver_locus=16, chromosome=2):
+    def distort(self, init_parent, E, chromosome, distorter=(20, 2)):
         """
-        I know that in these individuals recombination breakpoints must include our seg distorted region therefore we can constrain the recombination map to simply include the regions we allow as permissible for a
-        breakpoint in this region.
+        This method is going to simulate chiasma on the third chromosome by manipulating the recombination map to include this ~10Mb segment on chr3
 
-        For the sake of simplicity in this initial implementation I will force the driver locus to always be a P1 allele segment and by default I'll make on the chr3 centromere.
 
+
+        Note: This code can be cleaned up significantly but I don't want to write now so sue me
+
+        :param init_parent:
+        :param E:
         :return:
         """
+        constrained_rmap = {chromosome: {}}
+        if chromosome == 2:#Chromosome 3L
+            driver_locus = distorter[0]
+            if E == 1:
+                init_parent = 1 #If there is a single recombination then the initial part of the chromosome MUST be P2 so that we can switch to a P1 allele in the SD locus
+                for cmBin in self.cm_bins[chromosome].keys():
+                    if driver_locus > self.cm_bins[chromosome][cmBin][1]: #RMap must include areas that do not include past the SD locus
+                            constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
+                chiasma = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+                return chiasma, init_parent
 
-        #When E = 1 this makes sense
-        constrained_rmap = {chromosome:{}}
-        if E == 1:
-            for cmBin in self.cm_bins[chromosome].keys():
-                if init_parent == 0:
-                    if driver_locus < self.cm_bins[chromosome][cmBin][1]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-                else:
+            elif E == 2:
+                for cmBin in self.cm_bins[chromosome].keys():
+                    init_parent = 0 #E2's must be P1 at the start of chromosome in order for the centromere to be included
                     if driver_locus > self.cm_bins[chromosome][cmBin][1]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-            chiasma = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin] #Similarly when there is a double recombination event the parental gamete must be P1 and the recombination breakpoints
+                        #must include our distortion loci
 
-            return chiasma
-
-        elif E == 2:
-            for cmBin in self.cm_bins[chromosome].keys():
-                if init_parent == 0:
-                    if driver_locus > self.cm_bins[chromosome][cmBin][1]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-
-                else:
-                    if driver_locus < self.cm_bins[chromosome][cmBin][1]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-            s = 0
-            while s < 10.5:
-                if init_parent == 0:
+                s = 0
+                while s < 10.5:
                     chiasma_1 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                else:
-                    chiasma_1 = self.computeBreakpoint(arm=chromosome, map=self.cm_bins)
-                chiasma_2 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                s = abs(chiasma_1 - chiasma_2) / 1000000
+                    chiasma_2 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+                    s = abs(chiasma_1 - chiasma_2) / 1000000
 
-            return chiasma_1, chiasma_2
+                return chiasma_1, chiasma_2, init_parent
 
-    def segDistortion(self, reference, simID, driver_locus=16, chromosome=2):
+        else: #For chromosome 3R we similarly must include are segregation distorter by manipulating the recombination map.
+            driver_locus = distorter[1]
+            if E == 1:
+                for cmBin in self.cm_bins[chromosome].keys():
+                    if driver_locus < self.cm_bins[chromosome][cmBin][0]: #Manipulate the recombination map to force there to be a chiasma that will include our distortion loci
+                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
+                chiasma = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+
+                return chiasma, init_parent
+
+            elif E == 2:
+                for cmBin in self.cm_bins[chromosome].keys():
+                    if driver_locus < self.cm_bins[chromosome][cmBin][0]:
+                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin] #Similarly when there is a double recombination event the parental gamete must be P1 and the recombination breakpoints
+                        #must include our distortion loci
+
+                s = 0
+                while s < 10.5:
+                    chiasma_1 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+                    chiasma_2 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
+                    s = abs(chiasma_1 - chiasma_2) / 1000000
+
+                return chiasma_1, chiasma_2, init_parent
+
+
+    def segDistortion(self, reference, simID,  chromosome=(2,3)):
         """
         This method will simulate a driver locus by brute force. I will sample a number of recombination breakpoints on a given chromosome
         until they carry the distorter loci. Then I will proceed as normal and simulate the rest of their breakpoints.
@@ -670,7 +689,7 @@ class simulateSEQ:
                     break
                 else:
                     pass
-            if arm != chromosome: #If the chromosome arm we are calling breakpoints on does not contain the driver loci
+            if arm not in chromosome: #If the chromosome arm we are calling breakpoints on does not contain the driver loci
                 if E == 1:  # E1
                     chiasma = self.computeBreakpoint(arm=arm, map=self.cm_bins)
                     breakpoints.append(chiasma)
@@ -688,16 +707,17 @@ class simulateSEQ:
                     pass
 
             else: #If we are calling RBPs on a chromosome carrying a driver loci then we will call a method to brute force create segregation distortion
+                #This method is going to force the recombination map to include the locus of SD
                 if E == 1:  # E1
-                    chiasma = self.Distorter_chiasma(init_parent=init_parent, E=E)
+                    chiasma, init_parent = self.distort(init_parent=init_parent, E=E, chromosome=arm)
                     breakpoints.append(chiasma)
 
                 elif E == 2:  # E2
-                    chiasma_1, chiasma_2 = self.Distorter_chiasma(init_parent=init_parent, E=E)
+                    chiasma_1, chiasma_2, init_parent = self.distort(init_parent=init_parent, E=E, chromosome=arm)
                     breakpoints.append(chiasma_1)
                     breakpoints.append(chiasma_2)
                 else:  # E0
-                    pass
+                    init_parent = 0
 
             orig_p = init_parent
             init_parent = self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
