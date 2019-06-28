@@ -4,6 +4,8 @@ import csv
 import numpy as np
 import random
 import argparse
+from pynverse import inversefunc
+import time
 import sys
 
 
@@ -68,12 +70,14 @@ class CommandLine():
         self.parser.add_argument("-w", "--wells", type=int, action="store", nargs="?", help="The number of wells to be simulated. 20-25 cells per well.",
                                  default=96)
         self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?", help="The reference genome numpy file to draw SNPs from",
-                                 default='/home/iskander/Documents/Barbash_lab/mDrive/ATAC_882_129.snp_reference.npy')
+                                 default='/home/iskander/Documents/Barbash_lab/mDrive/REF/ATAC_882_129.snp_reference.npy')
         self.parser.add_argument('-o', '--output', type=str, action='store', nargs='?', help='The name of your output file', default='out')
         self.parser.add_argument('-s', '--subsample', type=str, action='store', nargs='?', default= False)
         self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=2000)
         self.parser.add_argument('-d', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-sd', '--segregation_distortion', type=float, action='store', nargs='?', default=0.05)
+        self.parser.add_argument('-a', '--arm', type=int, action='store', default=np.random.randint(0, 5))
+        self.parser.add_argument('-p', '--position', type=int, action='store', default=False)
 
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
@@ -150,14 +154,16 @@ class simulateSEQ:
         chr_2L = (lambda x: -0.01*x**3 + 0.2*x**2 + 2.59*x - 1.59)
         chr_2R = (lambda x: -0.007*x**3 + 0.35*x**2 - 1.43*x + 56.91)
         chr_3L = (lambda x: -0.006*x**3 + 0.09*x**2 + 2.94*x - 2.9)
-        chr_3R = (lambda x:-0.004*x**3 + 0.24*x**2 - 1.63*x + 50.26)
+        chr_3R = (lambda x: -0.004*x**3 + 0.24*x**2 - 1.63*x + 50.26)
         chr_X = (lambda x: -0.01*x**3 + 0.30*x**2 + 1.15*x - 1.87)
 
         bp_to_cM = [chr_2L, chr_2R, chr_3L, chr_3R, chr_X]
 
         return bp_to_cM[arm]
 
-    def createMapping(self):
+
+
+    def createMapping(self): #Depreceated function delete soon
         """
         Use the function to turn bp to cM to create a table to translate a cM distance to a bp window. This way we can draw cM from a random uniform distribution and in this way turn it back into a bp value
 
@@ -211,29 +217,30 @@ class simulateSEQ:
         """
         pass
 
-    def computeBreakpoint(self, arm, map):
+    def computeBreakpoint(self, arm, bp_max, bp_min):
 
         """
-        Compute the breakpoints using the recombination map by generating a breakpoint uniformly across cM distance and then looking up the interval within that cM location.
-        Then we randomly uniform pick a breakpoint within the basepair interval of that 1cM bin. This should function well enough for our purposes one would think.
+        In order to compute the breakpoints for our chromosome arm we call the inverse of the function that maps our BP to the cM positions.
+        We are able to use the inverse of this function because it is monotonic within the domain we have defined outside of that domain it is non-recombinant so
+        we don't care about those areas.
 
-        :param E:
-        :param arm:
+        To call a breakpoint we randomly unformly choose a cM position from a max and min range as determined by the domain of our function. Then we transform that cM into a bp position
+        using the inverse of the function.
+
         :return:
         """
-        low = min(map[arm].keys())
-        high = max(map[arm].keys())
+        cM_max = self.cM_map(arm)(bp_max)
+        cM_min = self.cM_map(arm)(bp_min)
+        cM_pos = np.random.uniform(low=cM_min, high=cM_max, size=1)
 
-        bp = np.random.randint(low, high+1)
-
-
-        chiasma = random.randint(int(map[arm][bp][0]*1000000), int(map[arm][bp][1]*1000000))
-
-
+        chiasma = inversefunc(self.cM_map(arm), y_values=cM_pos)
+        print(chiasma)
+        chiasma = int(chiasma*1000000)
+        print(cM_pos, arm, chiasma)
         return chiasma
 
 
-    def read_RMAP(self):
+    def read_RMAP(self): #Depreceated function delete soon
         """
         Read back in the recombination map that was computed with the cM map function
 
@@ -395,8 +402,8 @@ class simulateSEQ:
         if len(breakpoint) == 1:#E1
             chiasma = breakpoint[0]
 
-            # hom segment
             if parental == 0:
+                # hom segment
                 segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma)]
                 P1 = np.zeros(shape=len(segment))
                 hom_segment = np.vstack((segment[:,0], P1)).T
@@ -410,6 +417,7 @@ class simulateSEQ:
                 complete_segment = np.concatenate((hom_segment, het_segment))
                 output_parental = 1
             else:
+                #hom segment
                 segment = reference[arm][np.where(reference[arm][:, 0] > chiasma)]
                 P1 = np.zeros(shape=len(segment))
                 hom_segment = np.vstack((segment[:, 0], P1)).T
@@ -489,61 +497,8 @@ class simulateSEQ:
 
         self.sim_array[arm] = complete_segment
 
-        return output_parental
 
 
-    def simulateRecombinants(self, reference, simID = 1):
-
-        self.sim_array = [list() for chr in range(5)]
-        indiv_CO_inputs = [simID]
-
-        #Generate the E value for a chromosome based on the drosophila E-values
-        #E0, E1, E2
-        e_values = [[[0,15], [16, 91], [92,100]], [[0,16], [17, 92], [94,100]], [[0,5], [6, 76], [77, 100]], [[0,12], [13, 79], [80, 100]], [[0,7], [8,56], [57,100]]]
-
-
-        for arm in range(5):
-            breakpoints = []
-            # Call initial state of chromosome#
-            distance = self.heterochromatin[arm]
-
-            if arm % 2 == 0:
-                init_parent = np.random.randint(0, 2) #Refresh for every chromosome
-            else:
-                pass
-
-            percentile = np.random.randint(0, 101)
-            for i in range(3):
-                if percentile >= e_values[arm][i][0] and percentile <= e_values[arm][i][1]:
-                    E = i
-                    break
-                else:
-                    pass
-
-            if E == 1:#E1
-                chiasma = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                breakpoints.append(chiasma)
-
-            elif E == 2:#E2
-                s = 0
-                while s < 10.5:
-                    chiasma_1 = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                    chiasma_2 = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                    s = abs(chiasma_1 - chiasma_2) / 1000000
-
-                breakpoints.append(chiasma_1)
-                breakpoints.append(chiasma_2)
-            else:#E0
-                pass
-            orig_p = init_parent
-            init_parent = self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
-            CO_inputs = [sorted(breakpoints), orig_p, arm]
-
-            sim_array = np.asarray(self.sim_array)
-            indiv_CO_inputs.append(CO_inputs)
-        self.simulated_crossovers.append(indiv_CO_inputs)
-
-        return sim_array
 
     def NA_subsampler(self, snp_input, sampling, all_subsamples):
 
@@ -590,97 +545,43 @@ class simulateSEQ:
         return snp_index
 
 
-    def distort(self, init_parent, E, chromosome, distorter=(20, 2)):
+    def simMeiosis(self, uniq_indivs, D=.1, driver = 1):
         """
-        This method is going to simulate chiasma on the third chromosome by manipulating the recombination map to include this ~10Mb segment on chr3
+        In order to more realistically simulate drive I am going to to inherently implement a drive mechanic in my simulation of all of my individuals.
+        I will do this by biasing the "meiosis" of the P1 allele in meiosis. My hope is that by doing this I will be more accurately modelling the true
+        rate of allele frequency decay that would be seen in a real population.
 
 
-
-        Note: This code can be cleaned up significantly but I don't want to write now so sue me
-
-        :param init_parent:
-        :param E:
         :return:
         """
-        constrained_rmap = {chromosome: {}}
-        if chromosome == 2:#Chromosome 3L
-            driver_locus = distorter[0]
-            if E == 1:
-                init_parent = 1 #If there is a single recombination then the initial part of the chromosome MUST be P2 so that we can switch to a P1 allele in the SD locus
-                for cmBin in self.cm_bins[chromosome].keys():
-                    if driver_locus > self.cm_bins[chromosome][cmBin][1]: #RMap must include areas that do not include past the SD locus
-                            constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-                chiasma = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                return chiasma, init_parent
 
-            elif E == 2:
-                for cmBin in self.cm_bins[chromosome].keys():
-                    init_parent = 0 #E2's must be P1 at the start of chromosome in order for the centromere to be included
-                    if driver_locus > self.cm_bins[chromosome][cmBin][1]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin] #Similarly when there is a double recombination event the parental gamete must be P1 and the recombination breakpoints
-                        #must include our distortion loci
+        #Simulate the meiosis
+        gamete_vector = np.zeros(shape=(3, uniq_indivs))
+        for chromosome in range(3):
+            if chromosome == driver: # sim meiosis with strength of driver
+                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5 - D)
+            else:
+                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5)
+        #Vector with gametes is now filled and we shall return it
 
-                s = 0
-                while s < 10.5:
-                    chiasma_1 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                    chiasma_2 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                    s = abs(chiasma_1 - chiasma_2) / 1000000
+        return gamete_vector.astype(int)
 
-                return chiasma_1, chiasma_2, init_parent
-
-        else: #For chromosome 3R we similarly must include are segregation distorter by manipulating the recombination map.
-            driver_locus = distorter[1]
-            if E == 1:
-                for cmBin in self.cm_bins[chromosome].keys():
-                    if driver_locus < self.cm_bins[chromosome][cmBin][0]: #Manipulate the recombination map to force there to be a chiasma that will include our distortion loci
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin]
-                chiasma = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-
-                return chiasma, init_parent
-
-            elif E == 2:
-                for cmBin in self.cm_bins[chromosome].keys():
-                    if driver_locus < self.cm_bins[chromosome][cmBin][0]:
-                        constrained_rmap[chromosome][cmBin] = self.cm_bins[chromosome][cmBin] #Similarly when there is a double recombination event the parental gamete must be P1 and the recombination breakpoints
-                        #must include our distortion loci
-
-                s = 0
-                while s < 10.5:
-                    chiasma_1 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                    chiasma_2 = self.computeBreakpoint(arm=chromosome, map=constrained_rmap)
-                    s = abs(chiasma_1 - chiasma_2) / 1000000
-
-                return chiasma_1, chiasma_2, init_parent
-
-
-    def segDistortion(self, reference, simID,  chromosome=(2,3)):
-        """
-        This method will simulate a driver locus by brute force. I will sample a number of recombination breakpoints on a given chromosome
-        until they carry the distorter loci. Then I will proceed as normal and simulate the rest of their breakpoints.
-
-
-        :param sampling:
-        :param driver_locus:
-        :return:
-        """
+    def simulateRecomb(self, reference, gametes, simID = 1):
 
         self.sim_array = [list() for chr in range(5)]
         indiv_CO_inputs = [simID]
 
-        # Generate the E value for a chromosome based on the drosophila E-values
-        # E0, E1, E2
-        e_values = [[[0, 15], [16, 91], [92, 100]], [[0, 16], [17, 92], [94, 100]], [[0, 5], [6, 76], [77, 100]],
-                    [[0, 12], [13, 79], [80, 100]], [[0, 7], [8, 56], [57, 100]]]
+        #Generate the E value for a chromosome based on the drosophila E-values
+        #E0, E1, E2
+        e_values = [[[0,15], [16, 91], [92,100]], [[0,16], [17, 92], [94,100]], [[0,5], [6, 76], [77, 100]], [[0,12], [13, 79], [80, 100]], [[0,7], [8,56], [57,100]]]
 
+        arm_to_gametes = [0,0,1,1,2] #code to translate from the arm to the full length chromosome to determine the parental gamete
         for arm in range(5):
+            chromosome = arm_to_gametes[arm]
             breakpoints = []
             # Call initial state of chromosome#
-            distance = self.heterochromatin[arm]
-
-            if arm % 2 == 0:
-                init_parent = np.random.randint(0, 2)  # Refresh for every chromosome
-            else:
-                pass
+            max_BP = self.heterochromatin[arm][1]
+            min_BP = self.heterochromatin[arm][0]
 
             percentile = np.random.randint(0, 101)
             for i in range(3):
@@ -689,38 +590,35 @@ class simulateSEQ:
                     break
                 else:
                     pass
-            if arm not in chromosome: #If the chromosome arm we are calling breakpoints on does not contain the driver loci
-                if E == 1:  # E1
-                    chiasma = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                    breakpoints.append(chiasma)
 
-                elif E == 2:  # E2
-                    s = 0
-                    while s < 10.5:
-                        chiasma_1 = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                        chiasma_2 = self.computeBreakpoint(arm=arm, map=self.cm_bins)
-                        s = abs(chiasma_1 - chiasma_2) / 1000000
+            if E == 1:#E1
+                chiasma = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
 
-                    breakpoints.append(chiasma_1)
-                    breakpoints.append(chiasma_2)
-                else:  # E0
-                    pass
+                breakpoints.append(chiasma)
+                #To be able to conform my gamete calling method to the simSNPs method I need to call the initial parent rather than the identity of centromeric gamete
+                if arm in [1, 3]:
+                    init_parent = gametes[chromosome]
+                    sys.exit()
+                else:
+                    init_parent = abs(gametes[chromosome] - 1)
 
-            else: #If we are calling RBPs on a chromosome carrying a driver loci then we will call a method to brute force create segregation distortion
-                #This method is going to force the recombination map to include the locus of SD
-                if E == 1:  # E1
-                    chiasma, init_parent = self.distort(init_parent=init_parent, E=E, chromosome=arm)
-                    breakpoints.append(chiasma)
+            elif E == 2:#E2
 
-                elif E == 2:  # E2
-                    chiasma_1, chiasma_2, init_parent = self.distort(init_parent=init_parent, E=E, chromosome=arm)
-                    breakpoints.append(chiasma_1)
-                    breakpoints.append(chiasma_2)
-                else:  # E0
-                    init_parent = 0
+                s = 0
+                while s < 10.5:
+                    chiasma_1 = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
+                    chiasma_2 = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
+                    s = abs(chiasma_1 - chiasma_2) / 1000000
+                breakpoints.append(chiasma_1)
+                breakpoints.append(chiasma_2)
+                init_parent = gametes[chromosome] #
+
+            else:#E0
+                init_parent = gametes[chromosome] #Entire segment is parental
+
 
             orig_p = init_parent
-            init_parent = self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
+            self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
             CO_inputs = [sorted(breakpoints), orig_p, arm]
 
             sim_array = np.asarray(self.sim_array)
@@ -749,6 +647,7 @@ def sample_lowCoverage(snp):
 
 if __name__ == '__main__':
 
+    start = time.time()
 ############# Call commandline ##########
 
     myArgs = CommandLine()
@@ -776,24 +675,30 @@ if __name__ == '__main__':
         noisy_cells = np.random.randint(low=myArgs.args.wells*20, high = (myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
 
         E_uniq = len(set(np.random.choice(a=myArgs.args.individuals, size=noisy_cells))) #Calculate the number of unique cells by using a noisy approach through literally sampling them
-        size_distortion = int(myArgs.args.size_distortion*E_uniq) # To account for a say 5% different cell contributions I will subtract 5% from the number of unique individuals
-        seg_distortion = (int(myArgs.args.segregation_distortion*E_uniq))
-        E_uniq = E_uniq - (size_distortion + seg_distortion)
 
-        #### First set of individuals with no size or seg distortion
+        size_distortion = int(myArgs.args.size_distortion*E_uniq) # To account for a say 5% different cell contributions I will subtract 5% from the number of unique individuals
+
+        non_Uniq = noisy_cells - E_uniq - size_distortion
+
+
+        #### Generate all of the unique cells
+
+        #Invoke meiosis first:
+        gamete_vector = simulate.simMeiosis(uniq_indivs=E_uniq, D=myArgs.args.segregation_distortion)
+        #Now iterate through the gametes and produce their recombination breakpoints in accordance to our allele frequencies
         for sim in range(E_uniq):
-            simulated_SNPs = simulate.simulateRecombinants(reference=reference_alleles, simID=sim+1)
+            gametes = gamete_vector[:,sim]
+            simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=sim+1, gametes=gametes)
             all_simulations.append(simulated_SNPs)
 
-        #### Segregation distortion ####
-        for distorter in range(seg_distortion):
-            sim_Distortion = simulate.segDistortion(reference=reference_alleles, simID=E_uniq+distorter+1)
-            all_simulations.append(sim_Distortion)
 
 
         #### Size distortion #####
-        geno_arm = np.random.randint(0, 5)
-        genotype = np.random.randint(0, len(reference_alleles[geno_arm][:,0]))
+        geno_arm = myArgs.args.arm
+        if myArgs.args.position == False:
+            genotype = np.random.randint(0, len(reference_alleles[geno_arm][:,0]))
+        else:
+            genotype = myArgs.args.position
 
         with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
             mySNP.write("{0}\t{1}\n".format(simulate.chr_mapping[str(geno_arm)], reference_alleles[geno_arm][:,0][genotype]))
@@ -804,7 +709,7 @@ if __name__ == '__main__':
         all_simulations = all_simulations + size_duplicates
 
         #Generate at random which individuals will be sampled multiple times for stochasticity
-        for collision in range(noisy_cells - (len(size_duplicates) + E_uniq + seg_distortion)):
+        for collision in range(non_Uniq):
             index = random.randint(0, len(simulate.simulated_crossovers)-1)
             crossover = simulate.simulated_crossovers[index]
             simulate.sim_array = [list() for chr in range(5)]
@@ -852,3 +757,7 @@ if __name__ == '__main__':
                 myCO.write(line+'\n')
 
             myCO.close()
+    end = time.time()
+    hours, rem = divmod(end - start, 3600)
+    minutes, seconds = divmod(rem, 60)
+    sys.stdout.write("Time elapsed: {:0>2}:{:0>2}:{:05.2f}\n".format(int(hours), int(minutes), seconds))
