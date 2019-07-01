@@ -163,7 +163,7 @@ class simulateSEQ:
 
 
 
-    def createMapping(self): #Depreceated function delete soon
+    def createMapping(self):
         """
         Use the function to turn bp to cM to create a table to translate a cM distance to a bp window. This way we can draw cM from a random uniform distribution and in this way turn it back into a bp value
 
@@ -227,20 +227,27 @@ class simulateSEQ:
         To call a breakpoint we randomly unformly choose a cM position from a max and min range as determined by the domain of our function. Then we transform that cM into a bp position
         using the inverse of the function.
 
+
+        The inverse function does not work for chr3R so I am going to have to stop implementing this.
         :return:
         """
-        cM_max = self.cM_map(arm)(bp_max)
-        cM_min = self.cM_map(arm)(bp_min)
-        cM_pos = np.random.uniform(low=cM_min, high=cM_max, size=1)
+        #cM_max = self.cM_map(arm)(bp_max)
+        #cM_min = self.cM_map(arm)(bp_min)
 
-        chiasma = inversefunc(self.cM_map(arm), y_values=cM_pos)
-        print(chiasma)
-        chiasma = int(chiasma*1000000)
-        print(cM_pos, arm, chiasma)
+        cM_min = min(self.cm_bins[arm].keys())
+        cM_max = max(self.cm_bins[arm].keys()) + 1
+        cM_pos = np.random.randint(low=cM_min, high=cM_max)
+
+
+        chiasma = np.random.randint(low=self.cm_bins[arm][cM_pos][0]*1000000, high= self.cm_bins[arm][cM_pos][1]*1000000)
+
+        #chiasma = inversefunc(self.cM_map(arm), y_values=cM_pos)
+        #chiasma = int(chiasma*1000000)
+
         return chiasma
 
 
-    def read_RMAP(self): #Depreceated function delete soon
+    def read_RMAP(self):
         """
         Read back in the recombination map that was computed with the cM map function
 
@@ -524,10 +531,10 @@ class simulateSEQ:
                     break
 
             # Add sequencing errors to the SNP arrays
-            #data = np.argwhere(np.isnan(snp_input[chrom][:,1]) == False).T[0]
-            #n = np.random.binomial(len(data), err)
-            #errors = np.random.choice(data, size=n)
-            #snp_input[chrom][:,1][errors] = 2
+            data = np.argwhere(np.isnan(snp_input[chrom][:,1]) == False).T[0]
+            n = np.random.binomial(len(data), err)
+            errors = np.random.choice(data, size=n, replace=False)
+            snp_input[chrom][:,1][errors] = 2
 
 
         return snp_input
@@ -598,7 +605,6 @@ class simulateSEQ:
                 #To be able to conform my gamete calling method to the simSNPs method I need to call the initial parent rather than the identity of centromeric gamete
                 if arm in [1, 3]:
                     init_parent = gametes[chromosome]
-                    sys.exit()
                 else:
                     init_parent = abs(gametes[chromosome] - 1)
 
@@ -671,7 +677,6 @@ if __name__ == '__main__':
         #Generate several hundred recombinants with some number of multiples
 
         #calculate the expected number of unique cells given the cells and individual arguments:
-
         noisy_cells = np.random.randint(low=myArgs.args.wells*20, high = (myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
 
         E_uniq = len(set(np.random.choice(a=myArgs.args.individuals, size=noisy_cells))) #Calculate the number of unique cells by using a noisy approach through literally sampling them
@@ -685,12 +690,13 @@ if __name__ == '__main__':
 
         #Invoke meiosis first:
         gamete_vector = simulate.simMeiosis(uniq_indivs=E_uniq, D=myArgs.args.segregation_distortion)
+
         #Now iterate through the gametes and produce their recombination breakpoints in accordance to our allele frequencies
         for sim in range(E_uniq):
             gametes = gamete_vector[:,sim]
+
             simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=sim+1, gametes=gametes)
             all_simulations.append(simulated_SNPs)
-
 
 
         #### Size distortion #####
