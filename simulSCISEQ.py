@@ -4,7 +4,7 @@ import csv
 import numpy as np
 import random
 import argparse
-from pynverse import inversefunc
+import math
 import time
 import sys
 
@@ -217,7 +217,7 @@ class simulateSEQ:
         """
         pass
 
-    def computeBreakpoint(self, arm, bp_max, bp_min):
+    def computeBreakpoint(self, arm, chiasma_vector, E, gamete):
 
         """
         In order to compute the breakpoints for our chromosome arm we call the inverse of the function that maps our BP to the cM positions.
@@ -231,20 +231,62 @@ class simulateSEQ:
         The inverse function does not work for chr3R so I am going to have to stop implementing this.
         :return:
         """
-        #cM_max = self.cM_map(arm)(bp_max)
-        #cM_min = self.cM_map(arm)(bp_min)
-
-        cM_min = min(self.cm_bins[arm].keys())
-        cM_max = max(self.cm_bins[arm].keys()) + 1
-        cM_pos = np.random.randint(low=cM_min, high=cM_max)
 
 
-        chiasma = np.random.randint(low=self.cm_bins[arm][cM_pos][0]*1000000, high= self.cm_bins[arm][cM_pos][1]*1000000)
+        if E == 1:
+            cM = int(np.nonzero(chiasma_vector)[0] + min(self.cm_bins[arm].keys()))
+            BP_interval = self.cm_bins[arm][cM]
+            chiasma = np.random.randint(low=BP_interval[0]*1000000, high=BP_interval[1]*1000000)
 
-        #chiasma = inversefunc(self.cM_map(arm), y_values=cM_pos)
-        #chiasma = int(chiasma*1000000)
+            # To be able to conform my gamete calling method to the simSNPs method I need to call the initial parent rather than the identity of centromeric gamete
+            if arm in [1, 3]:
+                init_parent = gamete
+            else:
+                init_parent = abs(gamete - 1)
 
-        return chiasma
+            return [chiasma], init_parent
+
+        elif E > 1: #Only DCO when there is 10.5 Mb distance between CO events
+
+            init_parent = gamete
+            arm_chiasma = []
+            cM = np.nonzero(chiasma_vector)[0] + min(self.cm_bins[arm].keys())
+            for breakpoints in cM: #Draw all breakpoint/chiasma for each recombination event in the E2,E3, etc.
+                BP_interval = self.cm_bins[arm][breakpoints]
+                chiasma = np.random.randint(low=BP_interval[0] * 1000000, high=BP_interval[1] * 1000000)
+                arm_chiasma.append(chiasma)
+
+            #Now we check to see if the breakpoints would be possible given crossover intereference of 10.5 Mb between breakpoints
+            #Let's construct a matrix of the distances between all of the breakpoints that we called
+            dist_matrix = np.zeros(shape=(E, E))
+            breakpoint_matrix = np.zeros(shape=(E,E))
+            for bp_1 in range(E): #compute all pairwise distances between each breakpoint
+                for bp_2 in range(E):
+                    distance = abs(arm_chiasma[bp_1] - arm_chiasma[bp_2]) / 1000000
+                    dist_matrix[bp_1][bp_2] = distance
+                    breakpoint_matrix[bp_1][bp_2] = arm_chiasma[bp_1]
+            dist_max = np.where(dist_matrix >= 10.5)
+
+            if dist_max[0].size == 2: #Obtain only the breakpoints that have a distance greater than 10.5 in the distance matrix all other breakpoints are not recorded
+                output_chiasma = list(set(breakpoint_matrix[dist_max].astype(int)))
+
+            elif dist_max[0].size > 2: #If it is a triple crossover we will ignore one of the breakpoints and just take two breakpoints that are 10.5 Mb apart
+                bp = np.random.randint(low=0, high=dist_max[0].size) #choose two breakpoints at random that are greater than 10.5 Mb apart
+                output_chiasma = [arm_chiasma[dist_max[0][bp]], arm_chiasma[dist_max[1][bp]]]
+
+
+            elif dist_max[0].size == 0: #if none of the breakpoints are 10.5 Mb apart then we will just take one of the breakpoints at random
+                output_chiasma = list(np.random.choice(arm_chiasma, size=1))
+
+
+            return output_chiasma, init_parent
+
+        else:
+            return list(), gamete
+
+
+
+
 
 
     def read_RMAP(self):
@@ -400,6 +442,27 @@ class simulateSEQ:
         reference = np.load(np_file, allow_pickle=True, encoding=encoding)
 
         return reference
+
+    def simChiasma(self, arm):
+        """
+        To simulate the number of recombination events on a given arm I am going to calculate the probability of recombination event occurring
+        across the chromosome arm in 1 cM bins. Then I will draw a BP position at random from these bins.
+
+        To do this I am going to draw a binomial sampling of the size of the number of cM bins in the arm and calculate the probability of crossover in each bin.
+        Essentially I am drawing a binomial sampling from a uniform probability as each bin is exactly 1 cM in length.
+
+
+        :return:
+        """
+
+        P_odd = (lambda x: (1 - math.exp(-((2 * x) / 100))) / 2) #prob of CO
+        chiasma_vector = np.random.binomial(n=1, size=len(self.cm_bins[arm].keys()), p = P_odd(1))
+        E_value = np.sum(chiasma_vector)
+
+
+        return E_value, chiasma_vector
+
+
 
 
     def simulateSNP(self, breakpoint, reference, parental, arm):
@@ -578,10 +641,6 @@ class simulateSEQ:
         self.sim_array = [list() for chr in range(5)]
         indiv_CO_inputs = [simID]
 
-        #Generate the E value for a chromosome based on the drosophila E-values
-        #E0, E1, E2
-        e_values = [[[0,15], [16, 91], [92,100]], [[0,16], [17, 92], [94,100]], [[0,5], [6, 76], [77, 100]], [[0,12], [13, 79], [80, 100]], [[0,7], [8,56], [57,100]]]
-
         arm_to_gametes = [0,0,1,1,2] #code to translate from the arm to the full length chromosome to determine the parental gamete
         for arm in range(5):
             chromosome = arm_to_gametes[arm]
@@ -590,38 +649,12 @@ class simulateSEQ:
             max_BP = self.heterochromatin[arm][1]
             min_BP = self.heterochromatin[arm][0]
 
-            percentile = np.random.randint(0, 101)
-            for i in range(3):
-                if percentile >= e_values[arm][i][0] and percentile <= e_values[arm][i][1]:
-                    E = i
-                    break
-                else:
-                    pass
+            # Generate the E value for a chromosome based on the drosophila E-values
+            # E0, E1, E2
+            E, chiasma_vector = self.simChiasma(arm)
+            chiasma, init_parent = self.computeBreakpoint(arm=arm, chiasma_vector = chiasma_vector, E=E, gamete = gametes[chromosome])
 
-            if E == 1:#E1
-                chiasma = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
-
-                breakpoints.append(chiasma)
-                #To be able to conform my gamete calling method to the simSNPs method I need to call the initial parent rather than the identity of centromeric gamete
-                if arm in [1, 3]:
-                    init_parent = gametes[chromosome]
-                else:
-                    init_parent = abs(gametes[chromosome] - 1)
-
-            elif E == 2:#E2
-
-                s = 0
-                while s < 10.5:
-                    chiasma_1 = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
-                    chiasma_2 = self.computeBreakpoint(arm=arm, bp_max= max_BP, bp_min= min_BP)
-                    s = abs(chiasma_1 - chiasma_2) / 1000000
-                breakpoints.append(chiasma_1)
-                breakpoints.append(chiasma_2)
-                init_parent = gametes[chromosome] #
-
-            else:#E0
-                init_parent = gametes[chromosome] #Entire segment is parental
-
+            breakpoints = breakpoints + chiasma
 
             orig_p = init_parent
             self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
