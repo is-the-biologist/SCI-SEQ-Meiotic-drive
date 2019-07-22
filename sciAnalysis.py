@@ -146,6 +146,8 @@ class analyzeSEQ:
         self.paintedGenome = []
         self.fitted_allele_frequencies = []
         self.pseudoBulk_data = []
+        self.bulk_params = []
+        self.bulk_errors = []
         self.param_estimates = []
         self.param_errs = []
 
@@ -160,11 +162,27 @@ class analyzeSEQ:
 
         :return:
         """
+        correct_pos = {
+            0:0,
+            1:23,
+            2:0,
+            3:24.5,
+            4:0
+        }
+        avg_recomb_rate = 2.46
 
         #We use this function to compute the distance in cM from the two SNPs
         arms, pos = zip(*sorted(zip(arms, pos), key=operator.itemgetter(0))) #sort the SNPs by the chromosome arm they are derived from so we go left to right
 
+        #This method will compute the genetic distance as simply the distance given the genome wide average recombination rate
+        SNP_1 = pos[0] + correct_pos[arms[0]]
+        SNP_2 = pos[1] + correct_pos[arms[1]]
 
+        genetic_dist = abs(SNP_1 - SNP_2) * avg_recomb_rate
+
+        """
+        These sets of methods attempts to calculate the genetic distance using the melanogaster recombination map function and accounting for centromeric heterochromatin
+        
         cM_pos = []
         for snp in range(2):
             #Filter for SNPs that lie in the heterochromatin if they do use the cM distance that is the border. This way any two SNPs within heterochromatin will have distance of 0
@@ -199,6 +217,7 @@ class analyzeSEQ:
         else:
             #Get distance in cM and then return it
             genetic_dist = abs(cM_pos[0] - cM_pos[1])
+        """
 
         return genetic_dist
 
@@ -508,96 +527,7 @@ class analyzeSEQ:
         sys.stdout.write('SNP input loaded... {0} cells read in...\n'.format(len(SNPs)))
         return SNPs
 
-    def polarizeSNPs(self, simSNP, refSNP, sampleID):
-
-        """
-        Construct an NP array for each of the single cells that converts or SNP calls into P1, P2, or error so we can
-        simply analyze them.
-
-
-
-        POS P1  P2  Err
-        :param simSNP:
-        :param refSNP:
-        :return:
-        """
-
-
-        polarized_SNPs = []
-
-        for chrom in range(5):
-            assert len(simSNP[chrom][:, 0]) == len(refSNP[chrom][:, 0]), "Sample SNP array does not have same dimension as reference SNPs; Sample: {0}".format(sampleID)
-            chrom_SNPs = np.zeros(shape=(len(simSNP[chrom][:,0]) , 2))
-            chrom_SNPs[:,0] = simSNP[chrom][:,0]
-            for snp in range(len(simSNP[chrom][:,0])):
-                if simSNP[chrom][snp][1] == refSNP[chrom][snp][1]: #P1 allele
-                    chrom_SNPs[snp][1] = 0
-                elif simSNP[chrom][snp][1] == refSNP[chrom][snp][2]: #P2 allele
-                    chrom_SNPs[snp][1] = 1
-                else:# error allele
-                    chrom_SNPs[snp][1] = 2
-            polarized_SNPs.append(chrom_SNPs)
-
-        polarized_SNPs = np.asarray(polarized_SNPs)
-
-        return polarized_SNPs
-
-    def calc_interval(self, posterior_prob, ML_ind, ML_switch, threshold=.99):
-        """
-        Use the inherent properties of the posterior probabilities to draw some intervals around our predicted Maximum likelihood detected viterbi interval.
-
-        To determine the range of values where our breakpoint could be we take our
-
-        :param posterior_prob:
-        :param ML:
-        :return:
-        """
-
-
-        sys.stdout.write('Calculating intervals around recombination breakpoint with posterior probability threshold of {0}.\n'.format(threshold))
-        intervals = np.zeros(shape=(3,4,2))
-
-        for chromosome in range(3):
-            for pred in range(4):
-
-                prediction = int(ML_ind[chromosome][pred])
-                switch = int(ML_switch[chromosome][pred])
-
-                if prediction != 0:
-
-                    interval = -10
-                    if switch == 0:
-                        alt_switch = 1
-                    else:
-                        alt_switch = 0
-
-                    ##### Leftmost interval end point
-                    while interval < np.log(threshold): #Iterate through the left of the viterbi state change until we reach a .99 probability of the alternative state
-                        interval = posterior_prob[chromosome][:,prediction][alt_switch]
-                        prediction = prediction - 1
-                        if prediction <= 0: #if we reach the end of the SNPs w/o reaching our condition break at the end
-                            prediction = 0
-                            break
-                    interval_endpoint_left = prediction
-
-                    ##### Rightmost interval end point
-                    interval = -10
-                    prediction = int(ML_ind[0][chromosome]) #Iterate through the right side of the viterbi state change until we reach a .99 probability of the changed state
-                    while interval < np.log(threshold):
-                        interval = posterior_prob[chromosome][:, prediction][switch]
-                        prediction = prediction + 1
-                        if prediction >= len(posterior_prob[chromosome][0,:]):
-                            prediction = len(posterior_prob[chromosome][0,:]) - 1
-                            break
-                    interval_endpoint_right = prediction
-
-                    intervals[chromosome][pred][0] = interval_endpoint_left
-                    intervals[chromosome][pred][1] = interval_endpoint_right
-
-
-        return intervals
-
-    def cluster_RBPs(self, predictions, distance, threads, iter_=4):
+    def cluster_RBPs(self, predictions, distance, threads, iter_=5):
         """
 
         This method will use a form of clustering algorithm along with whatever dimensionality reduction methods I deem necessary to cluster my individuals properly.
@@ -658,30 +588,6 @@ class analyzeSEQ:
 
 
         return all_clusters
-
-    def avgInterval(self, snp_matrix, interval):
-        """
-        Calculate the average size of our posterior prob intervals for all RBP predictions.
-
-        :param snp_matrix:
-        :param interval:
-        :return:
-        """
-
-        chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
-        chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
-        chr_x = snp_matrix[4][:, 0] / 1000000
-        all_chr_arms = [chr_2, chr_3, chr_x]
-
-        genome_distance = 0
-        for arm in range(3):
-            left_interval = all_chr_arms[arm][int(interval[arm][0])]
-            right_interval = all_chr_arms[arm][int(interval[arm][1])]
-            genome_distance += abs(left_interval - right_interval)
-
-        avg_distance = genome_distance/3
-
-        return avg_distance
 
     def filterNaN(self, snp_input):
         """
@@ -952,7 +858,7 @@ class analyzeSEQ:
 
         return E_AF
 
-    def estimateSD_params(self):
+    def estimateSD_params(self, AF_data):
         """
         This method uses curve fitting least squares non-linear regression to fit my observed AF data to a model of segregation distortion.
         I will use this curve fitting to estimate both the strength and location of my segregation distortion parameter.
@@ -965,12 +871,15 @@ class analyzeSEQ:
         arm_position_correction = [0,23,0,24.5,0] #Use this to convert from chromosomal coordinates to the coordinates of the arm
         transformed_DIST = []
         for arm in range(5):
+
             #We need to extract the positions from the painted genome AF data and convert them to cM, but only in the domain that is within the euchromatin
             pG_index = arm_to_genome[arm]
             correct_pos = arm_position_correction[arm]
 
-            arm_pos_AF = self.paintedGenome[pG_index][np.intersect1d(np.where(self.paintedGenome[pG_index][:,0] - correct_pos < self.heterochromatin[arm][1] ), np.where(self.paintedGenome[pG_index][:,0] - correct_pos > self.heterochromatin[arm][0]))]
-            #arm_pos_AF = self.pseudoBulk_data[pG_index][np.intersect1d(np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos < self.heterochromatin[arm][1]), np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos > self.heterochromatin[arm][0]))]
+
+            arm_pos_AF = AF_data[pG_index][np.intersect1d(np.where(AF_data[pG_index][:,0] - correct_pos < self.heterochromatin[arm][1] ), np.where(AF_data[pG_index][:,0] - correct_pos > self.heterochromatin[arm][0]))]
+
+                #arm_pos_AF = self.pseudoBulk_data[pG_index][np.intersect1d(np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos < self.heterochromatin[arm][1]), np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos > self.heterochromatin[arm][0]))]
 
             cM_pos = np.array(list(map(self.cM_map(arm), arm_pos_AF[:,0] - correct_pos))) #convert Bp to cM
             cM_AF = np.hstack((cM_pos.reshape(-1,1), arm_pos_AF))
@@ -981,25 +890,41 @@ class analyzeSEQ:
         chr3 = np.concatenate((transformed_DIST[2], transformed_DIST[3]))
         chrX = transformed_DIST[4]
         cM_genome = [chr2, chr3, chrX]
-        centromeres = [[53, 55], [45, 47], [62, 65]]
+        centromeres = [[53, 55], [45, 47], [60, 62]]
         chrom_ends = [[0, 110], [0, 110], [0, 62]]
+
+        fitted_allele_frequencies = []
+        param_estimates = []
+        param_errs = []
         for chrom in range(3):
 
             SD_params, param_cov = curve_fit(self.expect_AF, cM_genome[chrom][:,0], cM_genome[chrom][:, 2], bounds=([-5, centromeres[chrom][0]],[.5, centromeres[chrom][1]])) #Predict the parameters of our model which are the strength of drive and the position of drive locus
-            self.param_estimates.append(SD_params)
-            self.param_errs.append( np.sqrt(np.diag(param_cov)))
+            param_estimates.append(SD_params)
+            param_errs.append( np.sqrt(np.diag(param_cov)))
             predAF = self.expect_AF(cM_genome[chrom][:,0], D = SD_params[0], drive_locus= SD_params[1]) #Use parameter estimates to output predict AF for our positions
-            self.fitted_allele_frequencies.append(np.column_stack((cM_genome[chrom][:,1], predAF)) )
+            fitted_allele_frequencies.append(np.column_stack((cM_genome[chrom][:,1], predAF)) )
+
+        return param_estimates, param_errs, fitted_allele_frequencies
 
     def pseudoBulk(self, all_individuals):
 
 
+        """
+        This function will compute the pseudobulk data from our single cell SNP reads.
 
-        self.pseudoBulk_data = [np.concatenate((self.polarized_samples[0][0][:, 0], self.polarized_samples[0][1][:, 0] + 23000000)) / 1000000,
-                  np.concatenate((self.polarized_samples[0][2][:, 0], self.polarized_samples[0][3][:, 0] + 24500000)) / 1000000,
-                  self.polarized_samples[0][4][:, 0] / 1000000]
+        In order to reduce noise I will bin the genome into 200kb bins as demonstrated in Wei et al., 2017
+
+        :param all_individuals:
+        :return:
+        """
+
+        sys.stdout.write('Calculating allele frequencies for pseudobulk data in 200kb bins\n')
+        SNP_positions= [np.concatenate((self.polarized_samples[0][0][:, 0], self.polarized_samples[0][1][:, 0] + 23000000)),
+                  np.concatenate((self.polarized_samples[0][2][:, 0], self.polarized_samples[0][3][:, 0] + 24500000)),
+                  self.polarized_samples[0][4][:, 0]]
 
         SNP_pileup = [[], [], []]
+
         for label in all_individuals:
             cell = self.polarized_samples[label]
             if len(SNP_pileup[0]) == 0:
@@ -1018,15 +943,29 @@ class analyzeSEQ:
                 SNP_pileup[2] = np.vstack((SNP_pileup[2], cell[4][:, 1]))
 
         for arm in range(3):
-            # To account for the nans we must not divide by the total number of cells but by the number of SNPs
-            # Seeen at that position
+            SNP_pileup[arm] = SNP_pileup[arm].T
+            # We will smooth out the SNP pileups by binning the genome in 200kb bins
+            midPoints = np.asarray([(step+100000)/1000000 for step in range(int(min(SNP_positions[arm])), int(max(SNP_positions[arm]))+200000, 200000)])
 
-            tot_SNPs = abs(np.sum(np.isnan(SNP_pileup[arm]).astype(int), axis=0) - len(all_individuals))
+            AF_bins = np.zeros(shape=(len(midPoints), 2))
+            AF_bins[:,0] = midPoints
 
-            self.pseudoBulk_data[arm] = np.vstack((self.pseudoBulk_data[arm], np.nansum(SNP_pileup[arm], axis=0) / tot_SNPs)).T
+            position = 0
+            for step in range(int(min(SNP_positions[arm])), int(max(SNP_positions[arm]))+200000, 200000): #Iterate from min SNP to max SNP in 200kb steps
 
-            # np.vstack((genome[arm], SNP_pileup[arm])).T
+                bin_snps = np.intersect1d(np.where(SNP_positions[arm] >= step), np.where(SNP_positions[arm] < step + 200000)) # Get the indices where this bin resides
 
+                if len(bin_snps) == 0:#if there are no SNPs in the given bin then pass the allele frequency from the bin - 1 to this bin for simplicity
+                    AF_bins[:, 1][position] = AF_bins[:, 1][position-1]
+                else:
+                    tot_SNPs = abs(np.sum(np.isnan(SNP_pileup[arm][bin_snps]).astype(int), axis=1) - len(all_individuals)) #Total number of non-NaN markers (# of NaN markers - total individuals for each SNP)
+                    SNP_freq = np.nansum(SNP_pileup[arm][bin_snps], axis=1) / tot_SNPs #Divide the freq of P2 allele over the number of non-NaN markers
+                    bin_freq = np.average(SNP_freq) #Compute the average AF in the bin
+                    AF_bins[:,1][position] = bin_freq
+                position += 1
+
+
+            self.pseudoBulk_data.append(AF_bins)
 
 def wrapProcess():
     """
@@ -1062,7 +1001,6 @@ def wrapProcess():
     delta_indiv = mergeIndividuals(clusters, threads=myArgs.args.threads)
 
     return delta_indiv, all_features, clusters
-
 
 def mergeIndividuals(clusters, threads):
     """
@@ -1103,7 +1041,6 @@ def multiThreaded(cell_snp):
 
     return SNP_features
 
-
 def imputeSegments(cell):
     """
     After we have converged on cluster labels we pass to this method so that we can do the final classification of the data and then do the final imputation of all missing data.
@@ -1139,9 +1076,7 @@ def multImpute(cluster_labels):
                                 myAnalysis.polarized_samples[0][4][:, 0] / 1000000]
     all_individuals = [random.choice(cluster_labels[clust]) for clust in cluster_labels.keys()]
 
-    #To make my pseudoBulk function to draw individuals from the entire pool and not just from the cluster calls I am going to change the input
-    #from the cluster labels to all of the cells
-    myAnalysis.pseudoBulk(all_individuals = [i for i in range(len(myAnalysis.polarized_samples))])
+
 
     myPool = Pool(processes=myArgs.args.threads)
     SNP_pileup = myPool.map(imputeSegments, all_individuals)
@@ -1151,15 +1086,18 @@ def multImpute(cluster_labels):
     for arm in range(3):
         myAnalysis.paintedGenome[arm] = np.vstack((myAnalysis.paintedGenome[arm], np.sum(np.vstack(np.vstack(SNP_pileup)[:,arm]), axis=0) / (2*len(all_individuals)))).T
 
-    myAnalysis.estimateSD_params()
+
+    HMM_P, HMM_err, HMM_fitted_allele = myAnalysis.estimateSD_params(AF_data=myAnalysis.paintedGenome)
+    pseudo_P, pseudo_Err, pseudo_fitted_allele = myAnalysis.estimateSD_params(AF_data=myAnalysis.pseudoBulk_data)
 
     path, file = os.path.split(myArgs.args.snp)
-    out_file = file.split('.')[0]+'_HMM_AF.npy'
-    output = os.path.join(path, out_file)
-    np.save(output, myAnalysis.paintedGenome)
-    plot(name='{0}.imputed_AF'.format(myArgs.args.snp.split('.')[0]))
+    #out_file = file.split('.')[0]+'_HMM_AF.npy'
+    #output = os.path.join(path, out_file)
+    #np.save(output, myAnalysis.paintedGenome)
 
-def plot(name='test'):
+    plot(HMM_fitted_allele, HMM_P, HMM_err, pseudo_P, pseudo_Err, pseudo_fitted_allele, name='{0}.imputed_AF_avg_rate'.format(file.split('.')[0]))
+
+def plot(HMM_fit, HMM_P, HMM_err, pseudo_P, pseudo_Err, pseudo_fit, name='test', ):
 
 
     chromosomes = ['Chr2', 'Chr3', 'ChrX']
@@ -1168,16 +1106,21 @@ def plot(name='test'):
         axs = fig.subplots(3)
         for p in range(3):
             sns.scatterplot(myAnalysis.paintedGenome[p][:, 0], myAnalysis.paintedGenome[p][:, 1], ax=axs[p], edgecolor=None, alpha=.1, color='black')
-            #sns.scatterplot(myAnalysis.pseudoBulk_data[p][:,0], myAnalysis.pseudoBulk_data[p][:,1], ax=axs[p], edgecolor=None, alpha=.05 , color='red')
-            axs[p].plot(myAnalysis.fitted_allele_frequencies[p][:,0], myAnalysis.fitted_allele_frequencies[p][:,1], linestyle='--', color='blue')
+            sns.scatterplot(myAnalysis.pseudoBulk_data[p][:,0], myAnalysis.pseudoBulk_data[p][:,1], ax=axs[p], edgecolor=None, alpha=.5, color='red')
+            axs[p].plot(HMM_fit[p][:,0], HMM_fit[p][:,1], linestyle='--', color='blue')
+            axs[p].plot(pseudo_fit[p][:,0], pseudo_fit[p][:,1], linestyle='--', color='green')
             axs[p].set_title(chromosomes[p])
             axs[p].set_ylabel('P2 AF')
-            axs[p].text(x=0.5, y=-0.4, s='Driver strength: {0:.2f} +/- {2:.2f}%\n Drive locus: {1:.0f} cM'.format(myAnalysis.param_estimates[p][0]*100, myAnalysis.param_estimates[p][1], myAnalysis.param_errs[p][0]*100), size=12,
-                        ha='center', transform=axs[p].transAxes)
+            axs[p].text(x=0.5, y=-0.4, s='HMM: driver strength: {0:.2f} +/- {2:.2f}% Drive locus: {1:.0f} cM\n Pseudobulk: HMM: driver strength: {3:.2f} +/- {4:.2f}% Drive locus: {5:.0f} cM'.format(
+                HMM_P[p][0]*100, HMM_P[p][1], HMM_err[p][0]*100,
+                pseudo_P[p][0]*100, pseudo_Err[p][0]*100, pseudo_P[p][1]), size=12,
+                ha='center', transform=axs[p].transAxes)
+    #fig.legend(['HMM AF', 'Pseudobulk AF', 'HMM fitted curve', 'Pseudobulk fitted curve'])
     axs[2].set_xlabel('Mb')
     plt.tight_layout(h_pad=1)
     #plt.show()
-    plt.savefig('{0}.png'.format(name), dpi=300)
+    file_name = os.path.join('/home/iskander/Documents/Barbash_lab/mDrive/AF_PLOTS', name)
+    plt.savefig('{0}.png'.format(file_name), dpi=300)
     plt.close()
 
 if __name__ == '__main__':
@@ -1188,18 +1131,20 @@ if __name__ == '__main__':
     else:
         sys.stdout.write('Initializing single cell analysis...\nSNP input:{0}\n'.format(myArgs.args.snp))
 
-            #### Multithreaded ####
+        #### Multithreaded ####
         sys.stdout.write('{0} thread(s) to be used.\n'.format(myArgs.args.threads))
         snp_path, snp_file = os.path.split(myArgs.args.snp)
         myAnalysis = analyzeSEQ()
         myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
 
+        myAnalysis.pseudoBulk([i for i in range(len(myAnalysis.polarized_samples))])#Compute pseuddbulk before genotype imputation
+
         ### Run HMM, Cluster ###
-        for i in range(2):
+        for i in range(5):
             cluster_num, posteriors, cluster_labels = wrapProcess()
 
-    ### Calculate the allele frequencies via HMM and est. SD ###
-    multImpute(cluster_labels)
+        ### Calculate the allele frequencies via HMM and est. SD ###
+        multImpute(cluster_labels)
 
     end = time.time()
     hours, rem = divmod(end - start, 3600)
