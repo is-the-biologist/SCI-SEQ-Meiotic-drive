@@ -76,6 +76,7 @@ class CommandLine():
         self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=2000)
         self.parser.add_argument('-d', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-sd', '--segregation_distortion', type=float, action='store', nargs='?', default=0.05)
+        self.parser.add_argument('-dv', '--driver_chrom', type=int, action='store', nargs='?', default=1)
         self.parser.add_argument('-a', '--arm', type=int, action='store', default=np.random.randint(0, 5))
         self.parser.add_argument('-p', '--position', type=int, action='store', default=False)
 
@@ -160,8 +161,6 @@ class simulateSEQ:
         bp_to_cM = [chr_2L, chr_2R, chr_3L, chr_3R, chr_X]
 
         return bp_to_cM[arm]
-
-
 
     def createMapping(self):
         """
@@ -284,11 +283,6 @@ class simulateSEQ:
         else:
             return list(), gamete
 
-
-
-
-
-
     def read_RMAP(self):
         """
         Read back in the recombination map that was computed with the cM map function
@@ -304,7 +298,7 @@ class simulateSEQ:
                 self.cm_bins[arm][int(field[1])] = [float(field[2]), float(field[3])]
             myMap.close()
 
-    def size_Genotype(self, genotype, simulations, geno_arm, size_distortion):
+    def size_Genotype(self, genotype, simulations, geno_arm, size_distortion, non_uniq):
         """
         This function will generate a size dependent genotype issue by increasing the number of cells contributed by individuals with a pre-specified SNP
 
@@ -323,12 +317,27 @@ class simulateSEQ:
         for cell in simulations:
             geno_block = cell[geno_arm][genotype-5:genotype+5][:,1]
 
-            if len(set(geno_block)) == 1: #If we are a P1 homozygote for this block we will have a size increase
-                distorted_indivs.append(self.simulated_crossovers[index])
+            if len(set(geno_block)) == 1: #If we are a P1 homozygote for this block we will add the cell to a list that will have increased probability
+                distorted_indivs.append(index)
             index += 1
 
-        for sim in np.random.choice(a=len(distorted_indivs), size=size_distortion): #Randomly choose which individuals have a size distortion
-            crossover = distorted_indivs[sim]
+
+        #have index of individuals with the correct haplotype
+        all_cells = [cell for cell in range(len(simulations))] #array with the index of every cell
+        uniform_p = 1 / len(simulations) #probability of drawing a non-uniq cell with no size distortion ~ Uniform distribution
+        weighted_p = uniform_p + (uniform_p * size_distortion) #probability of drawing a cell with size distorted genotype
+        modifier = (len(distorted_indivs) * uniform_p * size_distortion) / (len(simulations) - len(distorted_indivs)) #This is the value that the probability of the uniform must be subtracted by to allow summing to 1
+
+        modified_p = uniform_p - modifier
+        p_distribution = np.full(shape=len(simulations), fill_value=modified_p)
+        p_distribution[distorted_indivs] = weighted_p
+
+        cell_sampling = np.random.choice(a=all_cells, size=non_uniq, p=p_distribution)
+
+
+        #Generate the new simulated data with the recombination breakpoints from the previous individual
+        for sim in cell_sampling:
+            crossover = self.simulated_crossovers[sim]
             self.sim_array = [list() for chr in range(5)]
             for arm in range(1, 6):
                 self.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental=crossover[arm][1], arm=crossover[arm][2])
@@ -336,7 +345,6 @@ class simulateSEQ:
             duplicates.append(self.sim_array)
 
         return duplicates
-
 
     def generateSNPreference(self, vcf, path):
         """
@@ -436,7 +444,6 @@ class simulateSEQ:
         outputName = os.path.join(path, '{0}.snp_reference'.format(vcf.split('.')[0]))
         np.save(outputName, reference_nparray)
 
-
     def load_reference(self, reference, path, encoding='latin1'):
         np_file = os.path.join(path, reference)
         reference = np.load(np_file, allow_pickle=True, encoding=encoding)
@@ -461,9 +468,6 @@ class simulateSEQ:
 
 
         return E_value, chiasma_vector
-
-
-
 
     def simulateSNP(self, breakpoint, reference, parental, arm):
 
@@ -567,9 +571,6 @@ class simulateSEQ:
 
         self.sim_array[arm] = complete_segment
 
-
-
-
     def NA_subsampler(self, snp_input, sampling, all_subsamples):
 
 
@@ -614,8 +615,7 @@ class simulateSEQ:
 
         return snp_index
 
-
-    def simMeiosis(self, uniq_indivs, D=.1, driver = 1):
+    def simMeiosis(self, uniq_indivs, D, driver=1):
         """
         In order to more realistically simulate drive I am going to to inherently implement a drive mechanic in my simulation of all of my individuals.
         I will do this by biasing the "meiosis" of the P1 allele in meiosis. My hope is that by doing this I will be more accurately modelling the true
@@ -626,12 +626,14 @@ class simulateSEQ:
         """
 
         #Simulate the meiosis
+
         gamete_vector = np.zeros(shape=(3, uniq_indivs))
         for chromosome in range(3):
             if chromosome == driver: # sim meiosis with strength of driver
                 gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5 - D)
             else:
                 gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5)
+
         #Vector with gametes is now filled and we shall return it
 
         return gamete_vector.astype(int)
@@ -710,24 +712,22 @@ if __name__ == '__main__':
         #Generate several hundred recombinants with some number of multiples
 
         #calculate the expected number of unique cells given the cells and individual arguments:
-        noisy_cells = np.random.randint(low=myArgs.args.wells*20, high = (myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
+        noisy_cells = np.random.randint(low=myArgs.args.wells*20, high=(myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
 
         E_uniq = len(set(np.random.choice(a=myArgs.args.individuals, size=noisy_cells))) #Calculate the number of unique cells by using a noisy approach through literally sampling them
 
-        size_distortion = int(myArgs.args.size_distortion*E_uniq) # To account for a say 5% different cell contributions I will subtract 5% from the number of unique individuals
+        non_Uniq = noisy_cells - E_uniq
 
-        non_Uniq = noisy_cells - E_uniq - size_distortion
-
+        
 
         #### Generate all of the unique cells
 
         #Invoke meiosis first:
-        gamete_vector = simulate.simMeiosis(uniq_indivs=E_uniq, D=myArgs.args.segregation_distortion)
+        gamete_vector = simulate.simMeiosis(uniq_indivs=E_uniq, D=myArgs.args.segregation_distortion, driver=myArgs.args.driver_chrom)
 
         #Now iterate through the gametes and produce their recombination breakpoints in accordance to our allele frequencies
         for sim in range(E_uniq):
             gametes = gamete_vector[:,sim]
-
             simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=sim+1, gametes=gametes)
             all_simulations.append(simulated_SNPs)
 
@@ -738,31 +738,34 @@ if __name__ == '__main__':
             genotype = np.random.randint(0, len(reference_alleles[geno_arm][:,0]))
         else:
             genotype = myArgs.args.position
-
-        with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
-            mySNP.write("{0}\t{1}\n".format(simulate.chr_mapping[str(geno_arm)], reference_alleles[geno_arm][:,0][genotype]))
-        mySNP.close()
-
         #Create a size distortion by over sampling individuals
-        size_duplicates = simulate.size_Genotype(genotype=genotype, simulations=all_simulations, geno_arm= geno_arm, size_distortion= size_distortion) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
+        size_duplicates = simulate.size_Genotype(genotype=genotype, simulations=all_simulations, geno_arm=geno_arm, size_distortion= myArgs.args.size_distortion, non_uniq=non_Uniq) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
         all_simulations = all_simulations + size_duplicates
 
+        #Write out SNP file that contains positional info of our segregation distortion
+        chroms = {0:'2', 1:'3', 2:'X'}
+        with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
+            mySNP.write("SizeDistortion\tArm:{0}\tStrength:{1}\tPos:{2}\n".format(simulate.chr_mapping[str(geno_arm)], myArgs.args.size_distortion, reference_alleles[geno_arm][:,0][genotype]))
+            mySNP.write("SegDistortion\tChrom:{0}\tStrength:{1}\tPos:CENTROMERE\n".format(chroms[myArgs.args.driver_chrom], myArgs.args.segregation_distortion))
+        mySNP.close()
+
+
+
         #Generate at random which individuals will be sampled multiple times for stochasticity
-        for collision in range(non_Uniq):
-            index = random.randint(0, len(simulate.simulated_crossovers)-1)
-            crossover = simulate.simulated_crossovers[index]
-            simulate.sim_array = [list() for chr in range(5)]
+        #for collision in range(non_Uniq):
+        #    index = random.randint(0, len(simulate.simulated_crossovers)-1)
+        #    crossover = simulate.simulated_crossovers[index]
+        #    simulate.sim_array = [list() for chr in range(5)]
 
-            for arm in range(1,6):
-                simulate.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental= crossover[arm][1], arm=crossover[arm][2])
+        #    for arm in range(1,6):
+        #        simulate.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental= crossover[arm][1], arm=crossover[arm][2])
 
-            simulate.simulated_crossovers.append(crossover)
-            all_simulations.append(np.asarray(simulate.sim_array))
+         #   simulate.simulated_crossovers.append(crossover)
+         #   all_simulations.append(np.asarray(simulate.sim_array))
 
-        all_simulations = np.asarray(all_simulations)
+        #all_simulations = np.asarray(all_simulations)
 
         #Save the final output of the simulations
-
         np.save(myArgs.args.output+'.npy', all_simulations)
         with open(myArgs.args.output+'_crossovers.tsv', 'w') as myCO:
 
