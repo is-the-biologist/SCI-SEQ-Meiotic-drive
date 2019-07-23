@@ -77,8 +77,8 @@ class CommandLine():
         self.parser.add_argument('-d', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-sd', '--segregation_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-dv', '--driver_chrom', type=int, action='store', nargs='?', default=1)
-        self.parser.add_argument('-a', '--arm', type=int, action='store', default=np.random.randint(0, 5))
-        self.parser.add_argument('-p', '--position', type=int, action='store', default=False)
+        self.parser.add_argument('-a', '--arm', type=int, action='store', default=np.random.randint(0, 3))
+        self.parser.add_argument('-rmap', '--recombination_map', type=str, action='store', nargs='?', default='/home/iskander/Documents/Barbash_lab/mDrive/dmel.rmap.bed')
 
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
@@ -283,7 +283,7 @@ class simulateSEQ:
         else:
             return list(), gamete
 
-    def read_RMAP(self):
+    def read_RMAP(self, MAP):
         """
         Read back in the recombination map that was computed with the cM map function
 
@@ -291,14 +291,14 @@ class simulateSEQ:
         """
         for arm in range(5):
             self.cm_bins[arm] = {}
-        with open('dmel.rmap.bed', 'r') as myMap:
+        with open(MAP, 'r') as myMap:
 
             for field in csv.reader(myMap, delimiter = '\t'):
                 arm = self.num_map[field[0]]
                 self.cm_bins[arm][int(field[1])] = [float(field[2]), float(field[3])]
             myMap.close()
 
-    def size_Genotype(self, genotype, simulations, geno_arm, size_distortion, non_uniq):
+    def size_Genotype(self, cell_sampling):
         """
         This function will generate a size dependent genotype issue by increasing the number of cells contributed by individuals with a pre-specified SNP
 
@@ -312,29 +312,6 @@ class simulateSEQ:
 
         duplicates = []
 
-        distorted_indivs = []
-        index = 0
-        for cell in simulations:
-            geno_block = cell[geno_arm][genotype-5:genotype+5][:,1]
-
-            if len(set(geno_block)) == 1: #If we are a P1 homozygote for this block we will add the cell to a list that will have increased probability
-                distorted_indivs.append(index)
-            index += 1
-
-
-        #have index of individuals with the correct haplotype
-        all_cells = [cell for cell in range(len(simulations))] #array with the index of every cell
-        uniform_p = 1 / len(simulations) #probability of drawing a non-uniq cell with no size distortion ~ Uniform distribution
-        weighted_p = uniform_p + (uniform_p * size_distortion) #probability of drawing a cell with size distorted genotype
-        modifier = (len(distorted_indivs) * uniform_p * size_distortion) / (len(simulations) - len(distorted_indivs)) #This is the value that the probability of the uniform must be subtracted by to allow summing to 1
-
-        modified_p = uniform_p - modifier
-        p_distribution = np.full(shape=len(simulations), fill_value=modified_p)
-        p_distribution[distorted_indivs] = weighted_p
-
-        cell_sampling = np.random.choice(a=all_cells, size=non_uniq, p=p_distribution)
-
-
         #Generate the new simulated data with the recombination breakpoints from the previous individual
         for sim in cell_sampling:
             crossover = self.simulated_crossovers[sim]
@@ -345,6 +322,36 @@ class simulateSEQ:
             duplicates.append(self.sim_array)
 
         return duplicates
+
+    def sizeGametes(self, size_locus, size_distortion, gametes, cell_pool, direction=0):
+        """
+        Individuals that have a centromere that is P1 or P2 will be designated as having size distortion. Generates a
+        vector that contains which cell the individual in the gamete vector ought to be drawn from.
+
+        :param size_locus:
+        :param size_distortion:
+        :param gametes:
+        :return:
+        """
+
+        total_individuals = len(gametes[size_locus])
+        big_individuals = np.where(gametes[size_locus] == direction) #These individuals will have a size distortion
+
+
+        # have index of individuals with the correct haplotype
+        #modify the uniform probability distribution such that you bias drawing individuals into your pool that contribute more cells
+        all_cells = [cell for cell in range(total_individuals)]  # array with the index of every cell
+        uniform_p = 1 / total_individuals  # probability of drawing a non-uniq cell with no size distortion ~ Uniform distribution
+        weighted_p = uniform_p + (uniform_p * size_distortion)  # probability of drawing a cell with size distorted genotype
+        modifier = (len(big_individuals[0]) * uniform_p * size_distortion) / (total_individuals - len(big_individuals[0]))  # This is the value that the probability of the uniform must be subtracted by to allow summing to 1
+        modified_p = uniform_p - modifier
+
+        p_distribution = np.full(shape=total_individuals, fill_value=modified_p)
+        p_distribution[big_individuals] = weighted_p
+
+        cell_sampling = np.random.choice(a=all_cells, size=cell_pool, p=p_distribution)
+
+        return cell_sampling
 
     def generateSNPreference(self, vcf, path):
         """
@@ -654,7 +661,7 @@ class simulateSEQ:
             # Generate the E value for a chromosome based on the drosophila E-values
             # E0, E1, E2
             E, chiasma_vector = self.simChiasma(arm)
-            chiasma, init_parent = self.computeBreakpoint(arm=arm, chiasma_vector = chiasma_vector, E=E, gamete = gametes[chromosome])
+            chiasma, init_parent = self.computeBreakpoint(arm=arm, chiasma_vector=chiasma_vector, E=E, gamete=gametes[chromosome])
 
             breakpoints = breakpoints + chiasma
 
@@ -703,49 +710,59 @@ if __name__ == '__main__':
         simulate = simulateSEQ()
 
         #Read the recombination map
-        simulate.read_RMAP()
+        simulate.read_RMAP(MAP=myArgs.args.recombination_map)
 
         #simulate.generateSNPreference(path='/home/iskander/Documents/MEIOTIC_DRIVE/', vcf='882_129.snps.vcf')
         reference_alleles = simulate.load_reference(path=os.path.split(myArgs.args.reference)[0], reference=os.path.split(myArgs.args.reference)[1])
 
 
-        #Generate several hundred recombinants with some number of multiples
+        #Generate several thousand recombinants with some number of multiples
 
-        #calculate the expected number of unique cells given the cells and individual arguments:
-        noisy_cells = np.random.randint(low=myArgs.args.wells*20, high=(myArgs.args.wells*25) + 1 ) #Generate the number of cells sequenced in our pool with some random noise
+        # Invoke meiosis first:
+        gamete_vector = simulate.simMeiosis(uniq_indivs=myArgs.args.individuals, D=myArgs.args.segregation_distortion,
+                                            driver=myArgs.args.driver_chrom)
 
-        E_uniq = len(set(np.random.choice(a=myArgs.args.individuals, size=noisy_cells))) #Calculate the number of unique cells by using a noisy approach through literally sampling them
+        #The size distortion will increase the probability of drawing individuals from the gamete vector proportional to the distortion parameter
+        noisy_cells = np.random.randint(low=myArgs.args.wells * 20, high=(myArgs.args.wells * 25) + 1)  # Generate the number of cells sequenced in our pool with some random noise
+        cell_samples = simulate.sizeGametes(size_locus=myArgs.args.arm, size_distortion=myArgs.args.size_distortion, cell_pool=noisy_cells, gametes=gamete_vector)
 
-        non_Uniq = noisy_cells - E_uniq
+        #We now have a vector containing all of identities of all cells. Now must be a little tricky to conform this data structure to our other methods
+        E_uniq = list(set(cell_samples))
 
-        
 
         #### Generate all of the unique cells
 
-        #Invoke meiosis first:
-        gamete_vector = simulate.simMeiosis(uniq_indivs=E_uniq, D=myArgs.args.segregation_distortion, driver=myArgs.args.driver_chrom)
-
         #Now iterate through the gametes and produce their recombination breakpoints in accordance to our allele frequencies
-        for sim in range(E_uniq):
+        index = 0
+        for sim in E_uniq:
             gametes = gamete_vector[:,sim]
-            simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=sim+1, gametes=gametes)
+            simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=index, gametes=gametes)
             all_simulations.append(simulated_SNPs)
+            index += 1
 
 
         #### Size distortion #####
-        geno_arm = myArgs.args.arm
-        if myArgs.args.position == False:
-            genotype = np.random.randint(0, len(reference_alleles[geno_arm][:,0]))
-        else:
-            genotype = myArgs.args.position
-        #Create a size distortion by over sampling individuals
-        size_duplicates = simulate.size_Genotype(genotype=genotype, simulations=all_simulations, geno_arm=geno_arm, size_distortion= myArgs.args.size_distortion, non_uniq=non_Uniq) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
+
+        #First must get all of the duplicate indices from our cell_sampling array:
+        Non_uniq = []
+        index = 0
+        for cell in E_uniq:
+            duplis = len(cell_samples[np.where(cell_samples == cell)][:-1])
+            simulated_duplicates = np.full(shape=duplis, fill_value=index)
+            if len(Non_uniq) == 0:
+                Non_uniq = simulated_duplicates
+            else:
+                Non_uniq = np.concatenate((Non_uniq, simulated_duplicates))
+            index += 1
+
+        #Now have the list of all of our duplicates we can supply them to our size_duplicates method
+        size_duplicates = simulate.size_Genotype(cell_sampling=Non_uniq) #Create duplicates based on a 10 SNP window around a given SNP that must be homozygous
         all_simulations = all_simulations + size_duplicates
 
         #Write out SNP file that contains positional info of our segregation distortion
         chroms = {0:'2', 1:'3', 2:'X'}
         with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
-            mySNP.write("SizeDistortion\tArm:{0}\tStrength:{1}\tPos:{2}\n".format(simulate.chr_mapping[str(geno_arm)], myArgs.args.size_distortion, reference_alleles[geno_arm][:,0][genotype]))
+            mySNP.write("SizeDistortion\tChrom:{0}\tStrength:{1}\tPos:CENTROMERE\n".format(chroms[myArgs.args.arm], myArgs.args.size_distortion))
             mySNP.write("SegDistortion\tChrom:{0}\tStrength:{1}\tPos:CENTROMERE\n".format(chroms[myArgs.args.driver_chrom], myArgs.args.segregation_distortion))
         mySNP.close()
 
