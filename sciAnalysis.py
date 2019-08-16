@@ -12,6 +12,8 @@ import argparse
 from multiprocessing import Pool
 import random
 from scipy.optimize import curve_fit
+import pandas as pd
+import itertools
 from sklearn.cluster import DBSCAN
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
@@ -82,14 +84,15 @@ class CommandLine():
         self.parser.add_argument("-s", "--snp", type=str, action="store", nargs="?",
                                  help="The SNP array to be input for analysis.",
                                  default='/home/iskander/Documents/Barbash_lab/mDrive/SIM_DATA/SPARSE_simData.npy')
-        self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?",
-                                 help="The reference genome numpy file to polarize SNPs",
-                                 default='/home/iskander/Documents/MEIOTIC_DRIVE/882_129.snp_reference.npy')
+
         self.parser.add_argument("-t", "--threads", type=int, action="store", nargs="?",
                                  help="Number of threads to be specified if multi-threading is to be used.",
                                  default=1)
-        self.parser.add_argument("-i", "--interval", type=float, action='store', nargs='?', default = .99)
+        self.parser.add_argument("-rm", "--rmap", type=str, action='store', nargs='?', help='Recombination map', default='/home/iskander/Documents/Barbash_lab/mDrive/dmel_2xRate.rmap.bed')
+        self.parser.add_argument("-i", "--interval", type=float, action='store', nargs='?', default=.99)
         self.parser.add_argument('-d', '--distance', type=float, action='store', nargs='?', default=.2)
+        self.parser.add_argument('-r', '--rate', type=float, action='store', nargs='?', default=2.46)
+
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
         else:
@@ -150,6 +153,8 @@ class analyzeSEQ:
         self.bulk_errors = []
         self.param_estimates = []
         self.param_errs = []
+        self.recomb_rate = 2.46
+        self.rmap = None
 
     def get_cM(self, arms, pos):
         """
@@ -169,16 +174,22 @@ class analyzeSEQ:
             3:24.5,
             4:0
         }
-        avg_recomb_rate = 2.46
+
+
+
 
         #We use this function to compute the distance in cM from the two SNPs
         arms, pos = zip(*sorted(zip(arms, pos), key=operator.itemgetter(0))) #sort the SNPs by the chromosome arm they are derived from so we go left to right
+
+        #Just use genome wide average, although accounting for heterochromatin would be ideal
+
+        RATE = self.recomb_rate
 
         #This method will compute the genetic distance as simply the distance given the genome wide average recombination rate
         SNP_1 = pos[0] + correct_pos[arms[0]]
         SNP_2 = pos[1] + correct_pos[arms[1]]
 
-        genetic_dist = abs(SNP_1 - SNP_2) * avg_recomb_rate
+        genetic_dist = abs(SNP_1 - SNP_2) * RATE
 
         """
         These sets of methods attempts to calculate the genetic distance using the melanogaster recombination map function and accounting for centromeric heterochromatin
@@ -535,6 +546,7 @@ class analyzeSEQ:
 
         :return:
         """
+        """
         sys.stdout.write("Optimizing tSNE embedding under {0} iterations\n".format(iter_))
 
         #tSNE manuals recommend doing PCA on the data if the number of dimensions is extremely high:
@@ -567,10 +579,10 @@ class analyzeSEQ:
 
         sys.stdout.write('DBSCAN clustering with epsilon = {0}...\n'.format(distance))
         #Next we cluster our data using DBSCAN a density based approach
+        """
 
-        #cluster_pred = AgglomerativeClustering(n_clusters=None, compute_full_tree=True, distance_threshold=distance, affinity='euclidean', linkage='ward').fit_predict(predictions)
-
-        cluster_pred = DBSCAN(eps=distance, min_samples=1, n_jobs=threads).fit(opt_embed).labels_
+        cluster_pred = AgglomerativeClustering(n_clusters=None, compute_full_tree=True, distance_threshold=distance, affinity='euclidean', linkage='ward').fit_predict(predictions)
+        #cluster_pred = DBSCAN(eps=distance, min_samples=1, n_jobs=threads).fit(opt_embed).labels_
 
         #### Get all cluster predictions and cells into a table:
         all_clusters = {}
@@ -580,10 +592,6 @@ class analyzeSEQ:
             else:
                 all_clusters[cluster_pred[cell]].append(cell)
 
-        #Clusters and sample IDs are tabulated now we can proceed on confirming their identity
-
-        #For each cluster in order to confirm the correct identity we should use the state space of the Viterbi decoding to determine whether or not the segments are P1, P2 or P2, P1
-        #If clusters have similar breakpoints but different ordering then they are distinct individuals
         sys.stdout.write('Found {0} clusters.\n'.format(len(all_clusters.keys())))
 
 
@@ -597,7 +605,7 @@ class analyzeSEQ:
         :return:
         """
 
-        chroms = ['2L', '2R', '3L', '3R', 'X']
+
         #sys.stdout.write('Filtering missing data...')
         clean_Cell = []
         total_markers = 0
@@ -606,7 +614,7 @@ class analyzeSEQ:
         for chrom in range(5):
             #Determine where the missing data is:
 
-            data = np.argwhere(np.isnan(snp_input[chrom][:, 1]) == False).T[0]
+            data = np.argwhere(np.isnan(snp_input[chrom][:, 1])==False).T[0]
             marker_index.append(data)
             clean_chrom = snp_input[chrom][data]
             clean_Cell.append(clean_chrom)
@@ -833,15 +841,20 @@ class analyzeSEQ:
         :return:
         """
 
-        chr_2L = (lambda x: -0.01 * x ** 3 + 0.2 * x ** 2 + 2.59 * x - 1.59)
-        chr_2R = (lambda x: -0.007 * x ** 3 + 0.35 * x ** 2 - 1.43 * x + 56.91)
-        chr_3L = (lambda x: -0.006 * x ** 3 + 0.09 * x ** 2 + 2.94 * x - 2.9)
-        chr_3R = (lambda x: -0.004 * x ** 3 + 0.24 * x ** 2 - 1.63 * x + 50.26)
-        chr_X = (lambda x: -0.01 * x ** 3 + 0.30 * x ** 2 + 1.15 * x - 1.87)
+        chroms = ['2L', '2R', '3L', '3R', 'X']
+        cM_bins = self.rmap.loc[self.rmap[0] == chroms[arm]].values[:,1:4] #Get the bins for the selected chromosome/arm
+        get_cM = lambda x: cM_bins[np.intersect1d(np.where(x >= cM_bins[:,1]), np.where(x < cM_bins[:,2]))][0][0]
 
-        bp_to_cM = [chr_2L, chr_2R, chr_3L, chr_3R, chr_X]
 
-        return bp_to_cM[arm]
+        #chr_2L = (lambda x: -0.01 * x ** 3 + 0.2 * x ** 2 + 2.59 * x - 1.59)
+        #chr_2R = (lambda x: -0.007 * x ** 3 + 0.35 * x ** 2 - 1.43 * x + 56.91)
+        #chr_3L = (lambda x: -0.006 * x ** 3 + 0.09 * x ** 2 + 2.94 * x - 2.9)
+        #chr_3R = (lambda x: -0.004 * x ** 3 + 0.24 * x ** 2 - 1.63 * x + 50.26)
+        #chr_X = (lambda x: -0.01 * x ** 3 + 0.30 * x ** 2 + 1.15 * x - 1.87)
+
+        #bp_to_cM = [chr_2L, chr_2R, chr_3L, chr_3R, chr_X]
+
+        return get_cM
 
     def expect_AF(self, cM, D, drive_locus):
         """
@@ -866,7 +879,7 @@ class analyzeSEQ:
         :return:
         """
 
-        sys.stdout.write('Fitting parameters for segregation distortion inference and predicting allele frequencies...\n')
+        sys.stdout.write('Fitting parameters for segregation distortion inference...\n')
         arm_to_genome = [0,0,1,1,2]
         arm_position_correction = [0,23,0,24.5,0] #Use this to convert from chromosomal coordinates to the coordinates of the arm
         transformed_DIST = []
@@ -876,10 +889,7 @@ class analyzeSEQ:
             pG_index = arm_to_genome[arm]
             correct_pos = arm_position_correction[arm]
 
-
             arm_pos_AF = AF_data[pG_index][np.intersect1d(np.where(AF_data[pG_index][:,0] - correct_pos < self.heterochromatin[arm][1] ), np.where(AF_data[pG_index][:,0] - correct_pos > self.heterochromatin[arm][0]))]
-
-                #arm_pos_AF = self.pseudoBulk_data[pG_index][np.intersect1d(np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos < self.heterochromatin[arm][1]), np.where(self.pseudoBulk_data[pG_index][:, 0] - correct_pos > self.heterochromatin[arm][0]))]
 
             cM_pos = np.array(list(map(self.cM_map(arm), arm_pos_AF[:,0] - correct_pos))) #convert Bp to cM
             cM_AF = np.hstack((cM_pos.reshape(-1,1), arm_pos_AF))
@@ -890,9 +900,9 @@ class analyzeSEQ:
         chr3 = np.concatenate((transformed_DIST[2], transformed_DIST[3]))
         chrX = transformed_DIST[4]
         cM_genome = [chr2, chr3, chrX]
-        centromeres = [[53, 55], [45, 47], [60, 62]]
-        chrom_ends = [[0, 110], [0, 110], [0, 62]]
-
+        #centromeres = [[53, 55], [45, 47], [60, 62]]
+        #chrom_ends = [[0, 110], [0, 110], [0, 62]]
+        centromeres = [[105, 110], [89, 94], [123,125]] #When recombination rate is doubled then the centromeres end up being at these cM coordinates
         fitted_allele_frequencies = []
         param_estimates = []
         param_errs = []
@@ -967,6 +977,8 @@ class analyzeSEQ:
 
             self.pseudoBulk_data.append(AF_bins)
 
+
+
 def wrapProcess():
     """
     Wraps the multiprocessing of the posterior probability inference
@@ -1011,9 +1023,9 @@ def mergeIndividuals(clusters, threads):
     :return:
     """
 
-    orig_indivs = len(myAnalysis.polarized_samples)
+
     sys.stdout.write('Initializing genotype imputation...\n')
-    merged_clusters = []
+
     mergeable_clusters = [clusters[mc] for mc in clusters.keys() if len(clusters[mc]) > 1]
 
     if len(mergeable_clusters) > 0:
@@ -1074,26 +1086,31 @@ def multImpute(cluster_labels):
     myAnalysis.paintedGenome = [np.concatenate((myAnalysis.polarized_samples[0][0][:, 0], myAnalysis.polarized_samples[0][1][:, 0] + 23000000)) / 1000000,
                                 np.concatenate((myAnalysis.polarized_samples[0][2][:, 0], myAnalysis.polarized_samples[0][3][:, 0] + 24500000)) / 1000000,
                                 myAnalysis.polarized_samples[0][4][:, 0] / 1000000]
-    all_individuals = [random.choice(cluster_labels[clust]) for clust in cluster_labels.keys()]
+    enrichedCluster_genomes = [np.concatenate((myAnalysis.polarized_samples[0][0][:, 0], myAnalysis.polarized_samples[0][1][:, 0] + 23000000)) / 1000000,
+                                np.concatenate((myAnalysis.polarized_samples[0][2][:, 0], myAnalysis.polarized_samples[0][3][:, 0] + 24500000)) / 1000000,
+                                myAnalysis.polarized_samples[0][4][:, 0] / 1000000]
 
-
-
+    #Get the HMM inferred parameter allele frequencies for the collapsed clusters:
+    collapsed_individuals = [random.choice(cluster_labels[clust]) for clust in cluster_labels.keys()]
     myPool = Pool(processes=myArgs.args.threads)
-    SNP_pileup = myPool.map(imputeSegments, all_individuals)
+    SNP_pileup = myPool.map(imputeSegments, collapsed_individuals)
     myPool.close()
+
+
+
 
     sys.stdout.write('Inferring final allele frequency for population...\n')
     for arm in range(3):
-        myAnalysis.paintedGenome[arm] = np.vstack((myAnalysis.paintedGenome[arm], np.sum(np.vstack(np.vstack(SNP_pileup)[:,arm]), axis=0) / (2*len(all_individuals)))).T
+        myAnalysis.paintedGenome[arm] = np.vstack((myAnalysis.paintedGenome[arm], np.sum(np.vstack(np.vstack(SNP_pileup)[:,arm]), axis=0) / (2*len(collapsed_individuals)))).T
 
+    #Perform parameter estimation on all of my inferred allele frequencies
 
     HMM_P, HMM_err, HMM_fitted_allele = myAnalysis.estimateSD_params(AF_data=myAnalysis.paintedGenome)
     pseudo_P, pseudo_Err, pseudo_fitted_allele = myAnalysis.estimateSD_params(AF_data=myAnalysis.pseudoBulk_data)
 
+
+
     path, file = os.path.split(myArgs.args.snp)
-    #out_file = file.split('.')[0]+'_HMM_AF.npy'
-    #output = os.path.join(path, out_file)
-    #np.save(output, myAnalysis.paintedGenome)
 
     plot(HMM_fitted_allele, HMM_P, HMM_err, pseudo_P, pseudo_Err, pseudo_fitted_allele, name='{0}.imputed_AF_avg_rate'.format(file.split('.')[0]))
 
@@ -1111,11 +1128,11 @@ def plot(HMM_fit, HMM_P, HMM_err, pseudo_P, pseudo_Err, pseudo_fit, name='test',
             axs[p].plot(pseudo_fit[p][:,0], pseudo_fit[p][:,1], linestyle='--', color='green')
             axs[p].set_title(chromosomes[p])
             axs[p].set_ylabel('P2 AF')
-            axs[p].text(x=0.5, y=-0.4, s='HMM: driver strength: {0:.2f} +/- {2:.2f}% Drive locus: {1:.0f} cM\n Pseudobulk: HMM: driver strength: {3:.2f} +/- {4:.2f}% Drive locus: {5:.0f} cM'.format(
+            axs[p].text(x=0.5, y=-0.4, s='HMM: Driver strength: {0:.2f} +/- {2:.2f}% Drive locus: {1:.0f} cM\n Pseudobulk: Driver strength: {3:.2f} +/- {4:.2f}% Drive locus: {5:.0f} cM'.format(
                 HMM_P[p][0]*100, HMM_P[p][1], HMM_err[p][0]*100,
                 pseudo_P[p][0]*100, pseudo_Err[p][0]*100, pseudo_P[p][1]), size=12,
                 ha='center', transform=axs[p].transAxes)
-    #fig.legend(['HMM AF', 'Pseudobulk AF', 'HMM fitted curve', 'Pseudobulk fitted curve'])
+    fig.legend(['HMM AF', 'Pseudobulk AF', 'HMM fitted curve', 'Pseudobulk fitted curve'])
     axs[2].set_xlabel('Mb')
     plt.tight_layout(h_pad=1)
     #plt.show()
@@ -1137,10 +1154,14 @@ if __name__ == '__main__':
         myAnalysis = analyzeSEQ()
         myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
 
+        #Instantiate variables
+        myAnalysis.recomb_rate = myArgs.args.rate
+        myAnalysis.rmap = pd.read_csv(myArgs.args.rmap, header=None, sep='\t')
+
         myAnalysis.pseudoBulk([i for i in range(len(myAnalysis.polarized_samples))])#Compute pseuddbulk before genotype imputation
 
         ### Run HMM, Cluster ###
-        for i in range(5):
+        for i in range(1):
             cluster_num, posteriors, cluster_labels = wrapProcess()
 
         ### Calculate the allele frequencies via HMM and est. SD ###
