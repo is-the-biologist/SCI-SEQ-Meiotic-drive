@@ -140,11 +140,10 @@ class analyzeSEQ:
         ### Important data structures for SD detection and parameter estimation
         self.heterochromatin = {
             # A map of the freely recombining intervals of euchromatin within each drosophila chromosome arm in Mb
-            0: (0.53, 18.87),
-            1: (1.87, 20.87),
-            2: (0.75, 19.02),
-            3: (2.58, 27.44),
-            4: (1.22, 21.21)
+
+        }
+        self.cM_boundaries = {
+
         }
         self.paintedGenome = []
         self.fitted_allele_frequencies = []
@@ -155,8 +154,9 @@ class analyzeSEQ:
         self.param_errs = []
         self.recomb_rate = 2.46
         self.rmap = None
+        self.chroms = []
 
-    def get_cM(self, arms, pos):
+    def get_cM(self, pos):
         """
         Calculate the transition probabilty as a function of recombination distance between each SNP marker in array of emissions as calculated by
         https://petrov.stanford.edu/cgi-bin/recombination-rates_updateR5.pl#Method
@@ -167,27 +167,16 @@ class analyzeSEQ:
 
         :return:
         """
-        correct_pos = {
-            0:0,
-            1:23,
-            2:0,
-            3:24.5,
-            4:0
-        }
-
-
-
 
         #We use this function to compute the distance in cM from the two SNPs
-        arms, pos = zip(*sorted(zip(arms, pos), key=operator.itemgetter(0))) #sort the SNPs by the chromosome arm they are derived from so we go left to right
 
         #Just use genome wide average, although accounting for heterochromatin would be ideal
 
         RATE = self.recomb_rate
 
         #This method will compute the genetic distance as simply the distance given the genome wide average recombination rate
-        SNP_1 = pos[0] + correct_pos[arms[0]]
-        SNP_2 = pos[1] + correct_pos[arms[1]]
+        SNP_1 = pos[0]
+        SNP_2 = pos[1]
 
         genetic_dist = abs(SNP_1 - SNP_2) * RATE
 
@@ -240,17 +229,17 @@ class analyzeSEQ:
         :param snp_matrix:
         :return:
         """
-        #sys.stdout.write('Decoding maximum likelihood path...\n')
-        rbp_labels = [[], [], []]
-        rbps = [[],[],[]]
-        chr_2 = np.concatenate((snp_matrix[0][:, 0], snp_matrix[1][:, 0] + 23000000)) / 1000000
-        chr_3 = np.concatenate((snp_matrix[2][:, 0], snp_matrix[3][:, 0] + 24500000)) / 1000000
-        chr_x = snp_matrix[4][:,0] / 1000000
 
-        all_chr_arms = [chr_2, chr_3, chr_x]
+        rbp_labels = [[] for p in range(len(snp_matrix))]
+        rbps = [[] for p in range(len(snp_matrix))]
+
+
+        all_chr_arms = [snp_matrix[arm][:,0]/1000000 for arm in range(len(snp_matrix))]
         chr_index = 0
+
         for traceback in pointers:
             #iterate through pointers for each chromosome
+
             for position in range(1, len(traceback)):
                 #Check for a change in state from P1/P1 to P1/P2
                 if traceback[position-1] != traceback[position]:
@@ -270,27 +259,17 @@ class analyzeSEQ:
         states = ['p1', 'p2']
         chr_posteriors = []
 
-        chr_2 = np.concatenate((snp_input[0][:, 0], snp_input[1][:, 0] )) / 1000000 #Create an array with the within arm coordinates for each chromosome so we can transform them into cM distances
-        chr_3 = np.concatenate((snp_input[2][:, 0], snp_input[3][:, 0] )) / 1000000
-        chr_x = snp_input[4][:, 0] / 1000000
-        all_chr_arms = [chr_2, False, chr_3, False,
-                        chr_x]  # Have to put these placeholders in this because I have developed a weird codebase and I reap what I sow
 
-
+        all_chr_arms = [snp_input[arm][:, 0] / 1000000 for arm in range(len(snp_input))]
 
 
         # Fwd Bckwd
-        #sys.stdout.write('Computing forward-backward algorithm...')
-        for chrom in range(0, 5, 2):  # consider each chromosome as a single sequence
-            if chrom != 4:
-                chrom_length = len(snp_input[chrom]) + len(snp_input[chrom + 1])
-                # Create an array of the length of the chromosome where each element is the index of the chromosome arm that the SNP belongs to:
-                arm_indexes = np.concatenate((np.full(shape=(len(snp_input[chrom])), fill_value=chrom), np.full(shape=(len(snp_input[chrom + 1])), fill_value=chrom+1)))
-                chromosome_arm = np.vstack((snp_input[chrom], snp_input[chrom + 1]))
-            else:
-                chrom_length = len(snp_input[chrom])
-                arm_indexes = np.full(shape=(len(snp_input[chrom])), fill_value=chrom)
-                chromosome_arm = snp_input[chrom]
+
+        for chrom in range(len(snp_input)):  # consider each chromosome as a single sequence
+
+
+            chrom_length = len(snp_input[chrom])
+            chromosome_arm = snp_input[chrom]
 
             fMatrix = np.zeros(shape=(2, chrom_length))
 
@@ -308,8 +287,7 @@ class analyzeSEQ:
             for SNP in range(1, len(chromosome_arm)):
 
                 pos_snps = [all_chr_arms[chrom][SNP], all_chr_arms[chrom][SNP - 1]]
-                pos_arms = [arm_indexes[SNP], arm_indexes[SNP - 1]]
-                dist = self.get_cM(arms=pos_arms, pos=pos_snps)
+                dist = self.get_cM(pos=pos_snps)
 
                 emission = int(chromosome_arm[SNP][1])
                 for state in range(2):
@@ -332,8 +310,8 @@ class analyzeSEQ:
                 SNP = SNP - 1  # correct for index
 
                 pos_snps = [all_chr_arms[chrom][SNP], all_chr_arms[chrom][SNP + 1]]
-                pos_arms = [arm_indexes[SNP], arm_indexes[SNP+1]]
-                dist = self.get_cM(arms=pos_arms, pos=pos_snps)
+
+                dist = self.get_cM(pos=pos_snps)
 
 
                 # First loop is to go through sequence
@@ -446,27 +424,19 @@ class analyzeSEQ:
 
         #sys.stdout.write('Computing Viterbi decoding through HMM state space...')
 
-        states = ['p1', 'p2']
+
         arm_pointers = []
+        states = ['p1', 'p2']
+        chr_posteriors = []
 
-        chr_2 = np.concatenate((snp_input[0][:, 0], snp_input[1][:, 0])) / 1000000 #Create array where the SNP positions are their within arm coordinates
-        chr_3 = np.concatenate((snp_input[2][:, 0], snp_input[3][:, 0])) / 1000000
-        chr_x = snp_input[4][:, 0] / 1000000
-        all_chr_arms = [chr_2, False, chr_3, False, chr_x] #Have to put these placeholders in this because I have developed a weird codebase and I reap what I sow
+        all_chr_arms = [snp_input[arm][:, 0] / 1000000 for arm in range(len(snp_input))]
 
+        # Viterbi
 
-        #Viterbi algorithm
-        for chrom in range(0, 5, 2): #consider each chromosome as a single sequence
-            if chrom != 4:
-                chrom_length = len(snp_input[chrom]) + len(snp_input[chrom + 1])
-                # Create an array of the length of the chromosome where each element is the index of the chromosome arm that the SNP belongs to:
-                arm_indexes = np.concatenate((np.full(shape=(len(snp_input[chrom])), fill_value=chrom), np.full(shape=(len(snp_input[chrom + 1])), fill_value=chrom + 1)))
-                chromosome_arm = np.vstack((snp_input[chrom], snp_input[chrom + 1]))
-            else:
-                chrom_length = len(snp_input[chrom])
-                arm_indexes = np.full(shape=(len(snp_input[chrom])), fill_value=chrom)
-                chromosome_arm = snp_input[chrom]
+        for chrom in range(len(snp_input)):  # consider each chromosome as a single sequence
 
+            chrom_length = len(snp_input[chrom])
+            chromosome_arm = snp_input[chrom]
             hmmMatrix = np.zeros(shape=(2, chrom_length))
             tracebackMatrix = np.zeros(shape=(2, chrom_length))
 
@@ -485,12 +455,11 @@ class analyzeSEQ:
             for SNP in range(1, len(chromosome_arm)):
 
                 pos_snps = [all_chr_arms[chrom][SNP], all_chr_arms[chrom][SNP - 1]]
-                pos_arms = [arm_indexes[SNP], arm_indexes[SNP - 1]]
-                dist = self.get_cM(arms=pos_arms, pos=pos_snps)
+
+                dist = self.get_cM(pos=pos_snps)
 
                 emission = int(chromosome_arm[SNP][1])
                 for state in range(2):
-
 
                     # P(emission|state) * Max (P(transition to state) * P(state -1), P(transition to state) * P( state -1)
                     bestScore = max((self.transitions_probs['p1'][states[state]](dist) + hmmMatrix[0][SNP - 1], 0),
@@ -611,11 +580,11 @@ class analyzeSEQ:
         total_markers = 0
         total_missing = 0
         marker_index = []
-        for chrom in range(5):
+        for chrom in range(len(snp_input)):
             #Determine where the missing data is:
 
-            data = np.argwhere(np.isnan(snp_input[chrom][:, 1])==False).T[0]
-            marker_index.append(data)
+            data = np.argwhere(np.isnan(snp_input[chrom][:, 1]) == False).T[0]
+            marker_index.append(data) # The indices of the SNPs recorded
             clean_chrom = snp_input[chrom][data]
             clean_Cell.append(clean_chrom)
             total_markers += len(snp_input[chrom][:,1])
@@ -642,7 +611,7 @@ class analyzeSEQ:
         #sys.stdout.write('Imputing missing SNPs on individuals {0}\n'.format(sysout))
 
         imputed_genotypes = 0
-        for arm in range(5):
+        for arm in range(len(self.polarized_samples[0])):
             merged_arm = self.polarized_samples[cluster_IDs[0]][arm]
             for individual in range(1, len(cluster_IDs)):
                 # Merge the SNP calls from each chromosome arm of each individual
@@ -692,7 +661,7 @@ class analyzeSEQ:
 
                 snp_index += 1
 
-    def extractFeatures(self, posterior, full_snp_matrix, data, ID=1):
+    def extractFeatures(self, posterior, full_snp_matrix, data):
         """
         Rather than clustering based on recombination breakpoints which could be more prone to error when I miss classify a segment I am going to cluster
         on a different set of features.
@@ -706,82 +675,53 @@ class analyzeSEQ:
         """
         #Fill out the indices of the SNPs in order for each chromosome
 
-        chr_2 = np.concatenate((full_snp_matrix[0][:, 0], full_snp_matrix[1][:, 0] + 23000000)) / 1000000
-        chr_3 = np.concatenate((full_snp_matrix[2][:, 0], full_snp_matrix[3][:, 0] + 24500000)) / 1000000
-        chr_x = full_snp_matrix[4][:, 0] / 1000000
-        SNP_positions = [chr_2, chr_3, chr_x]
-        predict_chr_arms = [[x for x in range(len(chr_2))], [x for x in range(len(chr_3))],
-                            [x for x in range(len(chr_x))]]
+        predict_chr_arms = [[p for p in range(len(full_snp_matrix[arm][:, 0]))] for arm in range(len(full_snp_matrix))]
 
         ###########################################
+
 
         #To make the interpolation behave better we will fill out the ends of our chromosome arrays with a smooth line so we get less weird behavior
 
         #Fill out posteriors first for 2 and 3
-        for i in range(0,3,2):
-
-            #This is a gross little trick to make this iteratable and I'm not happy with it:
-            if i == 0:
-                pos = 0
-            else:
-                pos = 1
+        for arm in range(len(predict_chr_arms)):
 
 
-            right_end = np.asarray([posterior[pos][:,0] for snp in range(data[i][0])]).T
-            left_end = np.asarray([posterior[pos][:,-1] for snp in range(predict_chr_arms[pos][-1] - data[i+1][-1])]).T
+            #This dirty little thing extrapolates the posterior probability of P1 for each chromosome arm. This is necessary b/c the edges of the chromosome cannot be interpolated and instead must be extrapolated
+            #So we simply take the edge posterior value and extend it until the end of our chromosome. This isn't perfect, but seems to get the job done.
 
-            #Added a conditional to this statement to account for when the right or left end make vectors of length 0
-            posterior[pos] = np.hstack((right_end, posterior[pos])) if right_end.size else posterior[pos]
-            posterior[pos] = np.hstack((posterior[pos], left_end)) if left_end.size else posterior[pos]
-            #now fill out the x-axis
-            right_end_snp = [snp for snp in range(data[i][0])]
-            left_end_snp = [snp+predict_chr_arms[pos][-1] for snp in range(predict_chr_arms[pos][-1] - data[i + 1][-1])]
-            data[i] = np.hstack((right_end_snp, data[i]))
-            data[i+1] = np.hstack((data[i+1], left_end_snp))
+            #iterate through each arm and extrapolate
+            right_end = np.asarray([posterior[arm][:, 0] for snp in range(data[arm][0])]).T
+            left_end = np.asarray([posterior[arm][:, -1] for snp in range(predict_chr_arms[arm][-1] - data[arm][-1])]).T
 
+            #Concatenate our extrapolated values, and our posterior matrix
+            posterior[arm] = np.hstack((right_end, posterior[arm])) if right_end.size else posterior[arm]
+            posterior[arm] = np.hstack((posterior[arm], left_end)) if left_end.size else posterior[arm]
 
-        #X is a special case
-        right_end = np.asarray([posterior[2][:, 0] for snp in range(data[4][0])]).T
-        left_end = np.asarray([posterior[2][:, -1] for snp in range(predict_chr_arms[2][-1] - data[4][-1])]).T
-
-        posterior[2] = np.hstack((right_end, posterior[2])) if right_end.size else posterior[2]
-        posterior[2] = np.hstack((posterior[2], left_end)) if left_end.size else posterior[2]
-
-        # now fill out the x-axis
-        right_end_snp = [snp for snp in range(data[4][0])]
-        left_end_snp = [snp + predict_chr_arms[2][-1] for snp in range(predict_chr_arms[2][-1] - data[4][-1])]
-        data[4] = np.hstack((right_end_snp, data[4], left_end_snp))
+            # now fill out the x-axis
+            right_end_snp = [snp for snp in range(data[arm][0])]
+            left_end_snp = [snp + predict_chr_arms[arm][-1] for snp in range(predict_chr_arms[arm][-1] - data[arm][-1])]
+            data[arm] = np.hstack((right_end_snp, data[arm], left_end_snp))
 
         #######
-        chr_2 = np.concatenate((data[0], data[1]+len(full_snp_matrix[0][:,0])))
-        chr_3 = np.concatenate((data[2], data[3] + len(full_snp_matrix[2][:, 0])))
-        training_chr_arms = [chr_2, chr_3, data[4]] #Use the SNP indices as the x-axis and not the position along the chromosome as the interpolation behaves better this way
+        training_chr_arms = data #Use the SNP indices as the x-axis and not the position along the chromosome as the interpolation behaves better this way
 
 
 
 
 
         #Use interpolation to fill out the missing values
-        #This will allow us to impute the log odds of our missing SNPs
-        #fig = plt.figure(figsize=(20, 10))
-        #axs = fig.subplots(3, 1)
-        imputed_odds = []
-        for chrom in range(3):#Use univariate spline to predict the missing values from our observed log odds values
-            log_odds = np.exp(posterior[chrom][0])
-            #chrom_spline = UnivariateSpline(x=training_chr_arms[chrom], y=log_odds)
-            #predict_odds = chrom_spline(predict_chr_arms[chrom])
-            #Method for implementing a linear interpolation instead of spline
-            predict_odds = np.interp(x=predict_chr_arms[chrom], xp= training_chr_arms[chrom], fp=log_odds)
+        #This will allow us to impute the posterior probs of our missing SNPs
 
-            imputed_odds = np.hstack((imputed_odds, predict_odds))
+        imputed_probs = []
+        for chrom in range(len(data)):
+            posterior_prob = np.exp(posterior[chrom][0])
 
+            #Method for implementing a linear interpolation
+            predict_probs = np.interp(x=predict_chr_arms[chrom], xp=training_chr_arms[chrom], fp=posterior_prob)
 
-            #sns.lineplot(SNP_positions[chrom], predict_odds, ax=axs[chrom])
-            #sns.scatterplot(training_chr_arms[chrom], log_odds, ax=axs[chrom])
+            imputed_probs = np.hstack((imputed_probs, predict_probs))
 
-        #plt.savefig('/home/iskander/Documents/MEIOTIC_DRIVE/ID:{0}_linear_interpol.png'.format(ID), dpi=300)
-        #plt.close()
-        return np.asarray(imputed_odds)
+        return np.asarray(imputed_probs)
 
     def paintChromosome(self, breakpoints, labels):
         """
@@ -794,7 +734,7 @@ class analyzeSEQ:
         """
 
         painted_chromosomes = []
-        for chrom in range(3):
+        for chrom in range(len(self.paintedGenome)):
 
             prev_chiasma = 0
             paintedSegment = []
@@ -841,18 +781,10 @@ class analyzeSEQ:
         :return:
         """
 
-        chroms = ['2L', '2R', '3L', '3R', 'X']
-        cM_bins = self.rmap.loc[self.rmap[0] == chroms[arm]].values[:,1:4] #Get the bins for the selected chromosome/arm
+
+        cM_bins = self.rmap.loc[self.rmap[0] == self.chroms[arm]].values[:,1:4] #Get the bins for the selected chromosome/arm
         get_cM = lambda x: cM_bins[np.intersect1d(np.where(x >= cM_bins[:,1]), np.where(x < cM_bins[:,2]))][0][0]
 
-
-        #chr_2L = (lambda x: -0.01 * x ** 3 + 0.2 * x ** 2 + 2.59 * x - 1.59)
-        #chr_2R = (lambda x: -0.007 * x ** 3 + 0.35 * x ** 2 - 1.43 * x + 56.91)
-        #chr_3L = (lambda x: -0.006 * x ** 3 + 0.09 * x ** 2 + 2.94 * x - 2.9)
-        #chr_3R = (lambda x: -0.004 * x ** 3 + 0.24 * x ** 2 - 1.63 * x + 50.26)
-        #chr_X = (lambda x: -0.01 * x ** 3 + 0.30 * x ** 2 + 1.15 * x - 1.87)
-
-        #bp_to_cM = [chr_2L, chr_2R, chr_3L, chr_3R, chr_X]
 
         return get_cM
 
@@ -871,6 +803,32 @@ class analyzeSEQ:
 
         return E_AF
 
+    def read_heterochromatin(self):
+        """
+        This function will use the borders of the recombination map bed file supplied and build the heterochromatin boundaries.
+
+        To do this we have to find where the ends of the recombination map are and also determine which region is the centromeric
+        non-recombining heterochromatin which would have gap in cM distance.
+        :return:
+        """
+        c_index = 0
+        for chrom in self.chroms:
+            cM_bins = self.rmap.loc[self.rmap[0] == chrom].values[:,1:4]  # Get the bins for the selected chromosome/arm
+
+
+            #Then we must scan across the array and look for the centromere which should be detectable by looking for non-uniform jumps in cM
+            D_vector = np.full(fill_value=np.nan, shape=cM_bins.shape[0]-1)
+            for cM in range(1, cM_bins.shape[0]):
+                D = abs(cM_bins[:,0][cM-1] - cM_bins[:,0][cM])
+                D_vector[cM-1] = D
+            if len(cM_bins[np.where(D_vector > 1)]) > 0:
+                self.heterochromatin[c_index] =[ [cM_bins[0][1], cM_bins[:,2][np.where(D_vector > 1)][0] ], [cM_bins[:,1][np.where(D_vector > 1)[0] + 1][0], cM_bins[-1][2]] ]#now we get the borders of our heterochromatin boundaries
+                self.cM_boundaries[c_index] = [ [cM_bins[0][0], cM_bins[:,0][np.where(D_vector > 1)][0] ], [cM_bins[:,0][np.where(D_vector > 1)[0] + 1][0], cM_bins[-1][0]] ]
+            else: #The chromosome could have no centromere in which case we do not want to call that region
+                self.heterochromatin[c_index] = [[cM_bins[0][1], cM_bins[-1][2]]]
+                self.cM_boundaries[c_index] = [[cM_bins[0][0], cM_bins[-1][0]]]
+            c_index += 1
+
     def estimateSD_params(self, AF_data):
         """
         This method uses curve fitting least squares non-linear regression to fit my observed AF data to a model of segregation distortion.
@@ -880,38 +838,48 @@ class analyzeSEQ:
         """
 
         sys.stdout.write('Fitting parameters for segregation distortion inference...\n')
-        arm_to_genome = [0,0,1,1,2]
-        arm_position_correction = [0,23,0,24.5,0] #Use this to convert from chromosomal coordinates to the coordinates of the arm
+
         transformed_DIST = []
-        for arm in range(5):
 
-            #We need to extract the positions from the painted genome AF data and convert them to cM, but only in the domain that is within the euchromatin
-            pG_index = arm_to_genome[arm]
-            correct_pos = arm_position_correction[arm]
+        for arm in range(len(self.paintedGenome)):
+            #Check the output of this function to make sure it is correct
+            arm_pos_AF = []
 
-            arm_pos_AF = AF_data[pG_index][np.intersect1d(np.where(AF_data[pG_index][:,0] - correct_pos < self.heterochromatin[arm][1] ), np.where(AF_data[pG_index][:,0] - correct_pos > self.heterochromatin[arm][0]))]
+            for euchromatin in self.heterochromatin[arm]:
 
-            cM_pos = np.array(list(map(self.cM_map(arm), arm_pos_AF[:,0] - correct_pos))) #convert Bp to cM
+                if len(arm_pos_AF) == 0:
+                    arm_pos_AF = AF_data[arm][np.intersect1d(np.where(AF_data[arm][:,0] < euchromatin[1]), np.where(AF_data[arm][:,0] > euchromatin[0]))]
+                else:
+                    arm_pos_AF = np.concatenate((arm_pos_AF, AF_data[arm][np.intersect1d(np.where(AF_data[arm][:,0] < euchromatin[1]), np.where(AF_data[arm][:,0] > euchromatin[0]))]))
+            cM_pos = np.array(list(map(self.cM_map(arm), arm_pos_AF[:,0]))) #convert Bp to cM
             cM_AF = np.hstack((cM_pos.reshape(-1,1), arm_pos_AF))
             transformed_DIST.append(cM_AF)
 
-        ### Bp positions have been converted to cM distance we will now reconcatenate our cM and AF arrays for each chromosome and estimate parameters from those variables
-        chr2 = np.concatenate((transformed_DIST[0], transformed_DIST[1]))
-        chr3 = np.concatenate((transformed_DIST[2], transformed_DIST[3]))
-        chrX = transformed_DIST[4]
-        cM_genome = [chr2, chr3, chrX]
-        #centromeres = [[53, 55], [45, 47], [60, 62]]
-        #chrom_ends = [[0, 110], [0, 110], [0, 62]]
-        centromeres = [[105, 110], [89, 94], [123,125]] #When recombination rate is doubled then the centromeres end up being at these cM coordinates
+
+        cM_genome = transformed_DIST
+
         fitted_allele_frequencies = []
         param_estimates = []
         param_errs = []
-        for chrom in range(3):
+        for chrom in range(len(cM_genome)):
 
-            SD_params, param_cov = curve_fit(self.expect_AF, cM_genome[chrom][:,0], cM_genome[chrom][:, 2], bounds=([-5, centromeres[chrom][0]],[.5, centromeres[chrom][1]])) #Predict the parameters of our model which are the strength of drive and the position of drive locus
+            #As a boundary for the drive locus parameter we are going to limit to the centromere
+
+            if len(self.heterochromatin[chrom]) == 1:
+                #Telocentric arm (chrX dMel)
+                het_boundary = [self.cM_boundaries[chrom][0][1]-2, self.cM_boundaries[chrom][0][1]]
+            else:
+                #metacentric (Chr2, Chr3 dMel) this function will not quite be correct for Dvir b/c their centromeres are in different coordinate space
+                het_boundary = [self.cM_boundaries[chrom][0][1], self.cM_boundaries[chrom][1][0]]
+
+            #Determine an error term for our allele frequencies:
+            #in the future this will be more well defined, but for now we can just use the adjusted sample size
+
+            SD_params, param_cov = curve_fit(self.expect_AF, cM_genome[chrom][:,0], cM_genome[chrom][:, 2], bounds=([-5, het_boundary[0]],[.5, het_boundary[1]])) #Predict the parameters of our model which are the strength of drive and the position of drive locus
             param_estimates.append(SD_params)
-            param_errs.append( np.sqrt(np.diag(param_cov)))
-            predAF = self.expect_AF(cM_genome[chrom][:,0], D = SD_params[0], drive_locus= SD_params[1]) #Use parameter estimates to output predict AF for our positions
+            param_errs.append(np.sqrt(np.diag(param_cov)))
+
+            predAF = self.expect_AF(cM_genome[chrom][:,0], D = SD_params[0], drive_locus=SD_params[1]) #Use parameter estimates to output predict AF for our positions
             fitted_allele_frequencies.append(np.column_stack((cM_genome[chrom][:,1], predAF)) )
 
         return param_estimates, param_errs, fitted_allele_frequencies
@@ -929,30 +897,20 @@ class analyzeSEQ:
         """
 
         sys.stdout.write('Calculating allele frequencies for pseudobulk data in 200kb bins\n')
-        SNP_positions= [np.concatenate((self.polarized_samples[0][0][:, 0], self.polarized_samples[0][1][:, 0] + 23000000)),
-                  np.concatenate((self.polarized_samples[0][2][:, 0], self.polarized_samples[0][3][:, 0] + 24500000)),
-                  self.polarized_samples[0][4][:, 0]]
+        SNP_positions= [self.polarized_samples[0][arm][:, 0] for arm in range(len(self.polarized_samples[0]))]
 
-        SNP_pileup = [[], [], []]
+        SNP_pileup = [[] for p in range(len(self.polarized_samples[0]))]
 
+        #pile up all of the SNPs into a matrix
         for label in all_individuals:
             cell = self.polarized_samples[label]
-            if len(SNP_pileup[0]) == 0:
-                SNP_pileup[0] = np.concatenate((cell[0][:, 1], cell[1][:, 1]))
-            else:
-                SNP_pileup[0] = np.vstack((SNP_pileup[0], np.concatenate((cell[0][:, 1], cell[1][:, 1]))))
+            for arm in range(len(cell)):
+                if len(SNP_pileup[arm]) == 0:
+                    SNP_pileup[arm] = cell[arm][:, 1]
+                else:
+                    SNP_pileup[arm] = np.vstack((SNP_pileup[arm], cell[arm][:, 1]))
 
-            if len(SNP_pileup[1]) == 0:
-                SNP_pileup[1] = np.concatenate((cell[2][:, 1], cell[3][:, 1]))
-            else:
-                SNP_pileup[1] = np.vstack((SNP_pileup[1], np.concatenate((cell[2][:, 1], cell[3][:, 1]))))
-
-            if len(SNP_pileup[2]) == 0:
-                SNP_pileup[2] = cell[4][:, 1]
-            else:
-                SNP_pileup[2] = np.vstack((SNP_pileup[2], cell[4][:, 1]))
-
-        for arm in range(3):
+        for arm in range(len(self.polarized_samples[0])):
             SNP_pileup[arm] = SNP_pileup[arm].T
             # We will smooth out the SNP pileups by binning the genome in 200kb bins
             midPoints = np.asarray([(step+100000)/1000000 for step in range(int(min(SNP_positions[arm])), int(max(SNP_positions[arm]))+200000, 200000)])
@@ -977,8 +935,6 @@ class analyzeSEQ:
 
             self.pseudoBulk_data.append(AF_bins)
 
-
-
 def wrapProcess():
     """
     Wraps the multiprocessing of the posterior probability inference
@@ -988,7 +944,7 @@ def wrapProcess():
     #Data structures
 
     snp_len = 0
-    for length in range(5):
+    for length in range(len(myAnalysis.polarized_samples[0])):
         snp_len += len(myAnalysis.polarized_samples[0][length][:,0])
     all_features = np.zeros(shape=(len(myAnalysis.polarized_samples), snp_len))
 
@@ -1083,12 +1039,8 @@ def multImpute(cluster_labels):
 
 
     sys.stdout.write('Implementing maximum likelihood inference of P1 and P1/P2 states...\n')
-    myAnalysis.paintedGenome = [np.concatenate((myAnalysis.polarized_samples[0][0][:, 0], myAnalysis.polarized_samples[0][1][:, 0] + 23000000)) / 1000000,
-                                np.concatenate((myAnalysis.polarized_samples[0][2][:, 0], myAnalysis.polarized_samples[0][3][:, 0] + 24500000)) / 1000000,
-                                myAnalysis.polarized_samples[0][4][:, 0] / 1000000]
-    enrichedCluster_genomes = [np.concatenate((myAnalysis.polarized_samples[0][0][:, 0], myAnalysis.polarized_samples[0][1][:, 0] + 23000000)) / 1000000,
-                                np.concatenate((myAnalysis.polarized_samples[0][2][:, 0], myAnalysis.polarized_samples[0][3][:, 0] + 24500000)) / 1000000,
-                                myAnalysis.polarized_samples[0][4][:, 0] / 1000000]
+
+    myAnalysis.paintedGenome = [myAnalysis.polarized_samples[0][arm][:, 0] / 1000000 for arm in range(len(myAnalysis.polarized_samples[0]))]
 
     #Get the HMM inferred parameter allele frequencies for the collapsed clusters:
     collapsed_individuals = [random.choice(cluster_labels[clust]) for clust in cluster_labels.keys()]
@@ -1100,7 +1052,7 @@ def multImpute(cluster_labels):
 
 
     sys.stdout.write('Inferring final allele frequency for population...\n')
-    for arm in range(3):
+    for arm in range(len(myAnalysis.paintedGenome)):
         myAnalysis.paintedGenome[arm] = np.vstack((myAnalysis.paintedGenome[arm], np.sum(np.vstack(np.vstack(SNP_pileup)[:,arm]), axis=0) / (2*len(collapsed_individuals)))).T
 
     #Perform parameter estimation on all of my inferred allele frequencies
@@ -1117,20 +1069,20 @@ def multImpute(cluster_labels):
 def plot(HMM_fit, HMM_P, HMM_err, pseudo_P, pseudo_Err, pseudo_fit, name='test', ):
 
 
-    chromosomes = ['Chr2', 'Chr3', 'ChrX']
+
     with sns.axes_style('whitegrid'):
         fig = plt.figure(figsize=(15, 10))
-        axs = fig.subplots(3)
-        for p in range(3):
+        axs = fig.subplots(len(myAnalysis.chroms))
+        for p in range(len(myAnalysis.chroms)):
             sns.scatterplot(myAnalysis.paintedGenome[p][:, 0], myAnalysis.paintedGenome[p][:, 1], ax=axs[p], edgecolor=None, alpha=.1, color='black')
             sns.scatterplot(myAnalysis.pseudoBulk_data[p][:,0], myAnalysis.pseudoBulk_data[p][:,1], ax=axs[p], edgecolor=None, alpha=.5, color='red')
             axs[p].plot(HMM_fit[p][:,0], HMM_fit[p][:,1], linestyle='--', color='blue')
             axs[p].plot(pseudo_fit[p][:,0], pseudo_fit[p][:,1], linestyle='--', color='green')
-            axs[p].set_title(chromosomes[p])
+            axs[p].set_title(myAnalysis.chroms[p])
             axs[p].set_ylabel('P2 AF')
             axs[p].text(x=0.5, y=-0.4, s='HMM: Driver strength: {0:.2f} +/- {2:.2f}% Drive locus: {1:.0f} cM\n Pseudobulk: Driver strength: {3:.2f} +/- {4:.2f}% Drive locus: {5:.0f} cM'.format(
                 HMM_P[p][0]*100, HMM_P[p][1], HMM_err[p][0]*100,
-                pseudo_P[p][0]*100, pseudo_Err[p][0]*100, pseudo_P[p][1]), size=12,
+                pseudo_P[p][0]*100, pseudo_Err[p][0]*100, pseudo_P[p][1]), size=10,
                 ha='center', transform=axs[p].transAxes)
     fig.legend(['HMM AF', 'Pseudobulk AF', 'HMM fitted curve', 'Pseudobulk fitted curve'])
     axs[2].set_xlabel('Mb')
@@ -1151,6 +1103,7 @@ if __name__ == '__main__':
         #### Multithreaded ####
         sys.stdout.write('{0} thread(s) to be used.\n'.format(myArgs.args.threads))
         snp_path, snp_file = os.path.split(myArgs.args.snp)
+
         myAnalysis = analyzeSEQ()
         myAnalysis.polarized_samples = myAnalysis.load_SNP_array(path=snp_path, snp_array=snp_file, encoding='latin1')
 
@@ -1158,6 +1111,13 @@ if __name__ == '__main__':
         myAnalysis.recomb_rate = myArgs.args.rate
         myAnalysis.rmap = pd.read_csv(myArgs.args.rmap, header=None, sep='\t')
 
+
+        seen_chroms = set()
+        add_chroms = seen_chroms.add
+        myAnalysis.chroms = [x for x in myAnalysis.rmap.values[:, 0] if not (x in seen_chroms or add_chroms(x))] #add the chromosome names in order from the rmap file
+        myAnalysis.read_heterochromatin()
+
+        #Psuedobulk
         myAnalysis.pseudoBulk([i for i in range(len(myAnalysis.polarized_samples))])#Compute pseuddbulk before genotype imputation
 
         ### Run HMM, Cluster ###
