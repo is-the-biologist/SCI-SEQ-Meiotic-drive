@@ -7,7 +7,9 @@ import argparse
 import math
 import time
 import sys
-
+import pandas as pd
+from multiprocessing import Pool
+from functools import partial
 
 """
 ------------------------------------------------------------------------------------
@@ -72,13 +74,18 @@ class CommandLine():
         self.parser.add_argument("-r", "--reference", type=str, action="store", nargs="?", help="The reference genome numpy file to draw SNPs from",
                                  default='/home/iskander/Documents/Barbash_lab/mDrive/REF/ATAC_882_129.snp_reference.npy')
         self.parser.add_argument('-o', '--output', type=str, action='store', nargs='?', help='The name of your output file', default='out')
-        self.parser.add_argument('-s', '--subsample', type=str, action='store', nargs='?', default= False)
-        self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=2000)
-        self.parser.add_argument('-d', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
+        self.parser.add_argument('-s', '--subsample', action='store_true')
+        self.parser.add_argument('-c', '--concatenate', action='store_true')
+        self.parser.add_argument('-cov', '--coverage', type=int, action='store', nargs='?', default=3000)
+        self.parser.add_argument('-sz', '--size_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-sd', '--segregation_distortion', type=float, action='store', nargs='?', default=0.05)
         self.parser.add_argument('-dv', '--driver_chrom', type=int, action='store', nargs='?', default=1)
         self.parser.add_argument('-a', '--arm', type=int, action='store', default=np.random.randint(0, 3))
-        self.parser.add_argument('-rmap', '--recombination_map', type=str, action='store', nargs='?', default='/home/iskander/Documents/Barbash_lab/mDrive/dmel.rmap.bed')
+        self.parser.add_argument('-rmap', '--recombination_map', type=str, action='store', nargs='?', default='/home/iskander/Documents/Barbash_lab/mDrive/dmel.rmap.bed', help='Location of the recombination map for the genome.')
+        self.parser.add_argument('-t', '--telocentric', action='store_true', help='Use this flag for D virillis simulations.')
+        self.parser.add_argument('-rl', '--read_length', action='store', help='Read length to simulate sampling reads off of genome', default=75)
+        self.parser.add_argument('-j', '--jobs', action='store', type=int, help='The number threads to use for this process. Only applies to sub-sampling methods.', default=1)
+        self.parser.add_argument('-n', '--num_chromosomes', action="store", type=int, default=3, help='The number of whole chromosomes to segregate via meiosis only takes values 3 or 5.')
 
         if inOpts is None:  ## DONT REMOVE THIS. I DONT KNOW WHAT IT DOES BUT IT BREAKS IT
             self.args = self.parser.parse_args()
@@ -216,7 +223,7 @@ class simulateSEQ:
         """
         pass
 
-    def computeBreakpoint(self, arm, chiasma_vector, E, gamete):
+    def computeBreakpoint(self, arm, chiasma_vector, E, gamete, telo=False):
 
         """
         In order to compute the breakpoints for our chromosome arm we call the inverse of the function that maps our BP to the cM positions.
@@ -238,11 +245,18 @@ class simulateSEQ:
             chiasma = np.random.randint(low=BP_interval[0]*1000000, high=BP_interval[1]*1000000)
 
             # To be able to conform my gamete calling method to the simSNPs method I need to call the initial parent rather than the identity of centromeric gamete
-            if arm in [1, 3]:
-                init_parent = gamete
-            else:
-                init_parent = abs(gamete - 1)
+            #Need to account for Telocentric option b/c D mel is different than D vir
+            if telo == False:
+                if arm in [1, 3]:
+                    init_parent = gamete
+                else:
+                    init_parent = abs(gamete - 1)
 
+            else: #D virillis chromosomes are ordered weird and are telocentric so they require extra finagling
+                if arm in [3, 2]:
+                    init_parent = gamete
+                else:
+                    init_parent = abs(gamete - 1)
             return [chiasma], init_parent
 
         elif E > 1: #Only DCO when there is 10.5 Mb distance between CO events
@@ -328,6 +342,15 @@ class simulateSEQ:
         Individuals that have a centromere that is P1 or P2 will be designated as having size distortion. Generates a
         vector that contains which cell the individual in the gamete vector ought to be drawn from.
 
+        The size distortion will be simulated as being a shift in the mean body size of individuals with a given locus in 100%
+        LD with the centromere. This will parameterized as two normal distributions:
+
+        N~(1, .1) and N~(1+size, .1)
+
+        The choice of the mean as 1 is straightforward as it would make the math simpler. The SD at .1 will prevent negative
+        values from being drawn most if not all the time. This parameter may need more tuning if I delve into the literature
+        of Drosophila body size determinants.
+
         :param size_locus:
         :param size_distortion:
         :param gametes:
@@ -335,21 +358,23 @@ class simulateSEQ:
         """
 
         total_individuals = len(gametes[size_locus])
+
         big_individuals = np.where(gametes[size_locus] == direction) #These individuals will have a size distortion
+        normal_individuals = np.where(gametes[size_locus] != direction) #These individuals will not have size distortion
 
+        #Draw size samples from the normal distributions respective for each population:
+        big_sizes = np.random.normal(loc=1+size_distortion, scale=.1, size=len(big_individuals[0]))
+        normal_sizes = np.random.normal(loc=1, scale=.1, size=len(normal_individuals[0]))
 
-        # have index of individuals with the correct haplotype
-        #modify the uniform probability distribution such that you bias drawing individuals into your pool that contribute more cells
+        # create a probability distribution where probability of drawing an individual is proportional to body size:
+        p_distribution = np.zeros(shape=total_individuals)
+        p_distribution[big_individuals] = big_sizes
+        p_distribution[normal_individuals] = normal_sizes
+        p_distribution = p_distribution / np.sum(p_distribution)
+
+        #Now sample the cells in proportion to their size
         all_cells = [cell for cell in range(total_individuals)]  # array with the index of every cell
-        uniform_p = 1 / total_individuals  # probability of drawing a non-uniq cell with no size distortion ~ Uniform distribution
-        weighted_p = uniform_p + (uniform_p * size_distortion)  # probability of drawing a cell with size distorted genotype
-        modifier = (len(big_individuals[0]) * uniform_p * size_distortion) / (total_individuals - len(big_individuals[0]))  # This is the value that the probability of the uniform must be subtracted by to allow summing to 1
-        modified_p = uniform_p - modifier
-
-        p_distribution = np.full(shape=total_individuals, fill_value=modified_p)
-        p_distribution[big_individuals] = weighted_p
-
-        cell_sampling = np.random.choice(a=all_cells, size=cell_pool, p=p_distribution)
+        cell_sampling = np.random.choice(a=all_cells, size=cell_pool, p=p_distribution) #Draw samples from MultiN prob distribution
 
         return cell_sampling
 
@@ -431,7 +456,7 @@ class simulateSEQ:
                         else:
                             P2_allele = NT_encoding[ref_alt_encoding[int(P2.split('/')[0])]]#Recover the allele from the VCF ref/alt encoding and then transform into the NT encoding
 
-                        if P1_allele != np.nan and P2_allele != np.nan: #Correct for heterozygous individuals
+                        if np.isnan(P1_allele) is False and np.isnan(P2_allele) is False: #Correct for heterozygous individuals
                             informative_SNP = [position, P1_allele, P2_allele]
                             scaffold_array[chromosome].append(informative_SNP)
                         else:
@@ -470,7 +495,7 @@ class simulateSEQ:
         """
 
         P_odd = (lambda x: (1 - math.exp(-((2 * x) / 100))) / 2) #prob of CO
-        chiasma_vector = np.random.binomial(n=1, size=len(self.cm_bins[arm].keys()), p = P_odd(1))
+        chiasma_vector = np.random.binomial(n=1, size=len(self.cm_bins[arm].keys()), p=P_odd(1))
         E_value = np.sum(chiasma_vector)
 
 
@@ -480,6 +505,10 @@ class simulateSEQ:
 
         #Rather than return the alleles for each homozygous or heterozygous segment we will instead simply create a pre-polarized snp array
 
+        #P1 array wil be 0
+        #P1/P2 array will be 1
+
+        #When we sub sample will draw alleles from P1/P2 e.g. 0 or 1
         if len(breakpoint) == 1:#E1
             chiasma = breakpoint[0]
 
@@ -491,7 +520,8 @@ class simulateSEQ:
 
                 #het_segment
                 segment = reference[arm][np.where(reference[arm][:,0] > chiasma)]
-                het = np.random.randint(0,2, size= len(segment)).astype(float)
+                #het = np.random.randint(0,2, size= len(segment)).astype(float)
+                het = np.full(fill_value=1, shape=len(segment)).astype(float)
 
                 het_segment = np.vstack((segment[:,0] , het)).T
 
@@ -505,7 +535,8 @@ class simulateSEQ:
 
                 # het_segment
                 segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma)]
-                het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                #het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                het = np.full(fill_value=1, shape=len(segment)).astype(float)
                 het_segment = np.vstack((segment[:, 0], het)).T
 
                 output_parental = 0
@@ -527,13 +558,14 @@ class simulateSEQ:
                 segment_2 = np.where(reference[arm][:, 0] > chiasma_1)
                 seg_intersect = np.intersect1d(segment_1, segment_2)
 
-                het = np.random.randint(0, 2, size=len(seg_intersect)).astype(float)
+                #het = np.random.randint(0, 2, size=len(seg_intersect)).astype(float)
+                het = np.full(fill_value=1, shape=len(seg_intersect)).astype(float)
                 contig_2 = np.vstack((reference[arm][np.intersect1d(segment_1, segment_2)][:,0], het)).T
 
                 #het_segment = reference[arm][np.intersect1d(segment_1, segment_2)][:, [0,1]]
 
 
-                # het_segment
+                # hom_segment
                 segment = reference[arm][np.where(reference[arm][:, 0] > chiasma_2)]
                 P1 = np.zeros(shape=len(segment))
                 contig_3 = np.vstack((segment[:, 0], P1)).T
@@ -544,7 +576,8 @@ class simulateSEQ:
 
                 # het segment 1
                 segment = reference[arm][np.where(reference[arm][:, 0] <= chiasma_1)]
-                het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                #het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                het = np.full(fill_value=1, shape=len(segment)).astype(float)
                 contig_1= np.vstack((segment[:, 0], het)).T
 
                 # hom_segment
@@ -558,7 +591,8 @@ class simulateSEQ:
 
                 # het_segment_2
                 segment = reference[arm][np.where(reference[arm][:, 0] > chiasma_2)]
-                het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                #het = np.random.randint(0, 2, size=len(segment)).astype(float)
+                het = np.full(fill_value=1, shape=len(segment)).astype(float)
                 contig_3 = np.vstack((segment[:, 0], het)).T
 
                 output_parental = 1
@@ -571,12 +605,70 @@ class simulateSEQ:
                 complete_segment = np.vstack((reference[arm][:,0], P1)).T
                 output_parental = 0
             else:
-                het = np.random.randint(0, 2, size=len(reference[arm][:,0])).astype(float)
+                #het = np.random.randint(0, 2, size=len(reference[arm][:,0])).astype(float)
+                het = np.full(fill_value=1, shape=len(reference[arm][:,0])).astype(float)
                 complete_segment = np.vstack((reference[arm][:,0], het)).T
                 output_parental = 1
 
 
         self.sim_array[arm] = complete_segment
+
+    def simMeiosis(self, uniq_indivs, D, driver=1, num_chromosomes=3):
+        """
+        In order to more realistically simulate drive I am going to to inherently implement a drive mechanic in my simulation of all of my individuals.
+        I will do this by biasing the "meiosis" of the P1 allele in meiosis. My hope is that by doing this I will be more accurately modelling the true
+        rate of allele frequency decay that would be seen in a real population.
+
+
+        :return:
+        """
+
+        #Simulate the meiosis
+
+        gamete_vector = np.zeros(shape=(num_chromosomes, uniq_indivs))
+        for chromosome in range(num_chromosomes):
+            if chromosome == driver: # sim meiosis with strength of driver
+                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5 - D)
+            else:
+                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5)
+
+        #Vector with gametes is now filled and we shall return it
+
+        return gamete_vector.astype(int)
+
+    def simulateRecomb(self, reference, gametes, simID = 1, telo=False):
+
+        self.sim_array = [list() for chr in range(5)]
+        indiv_CO_inputs = [simID]
+
+        if telo == False: #These are weird code necessary for D mel vs. D vir
+            #For D melanogaster
+            arm_to_gametes = [0,0,1,1,2] #code to translate from the arm to the full length chromosome to determine the parental gamete
+        else:
+            #For D virillis
+            arm_to_gametes = [x for x in range(5)]
+        for arm in range(5):
+            chromosome = arm_to_gametes[arm]
+            breakpoints = []
+            # Call initial state of chromosome#
+
+            # Generate the E value for a chromosome based on the drosophila E-values
+            # E0, E1, E2
+            E, chiasma_vector = self.simChiasma(arm)
+            chiasma, init_parent = self.computeBreakpoint(arm=arm, chiasma_vector=chiasma_vector, E=E, gamete=gametes[chromosome], telo=telo)
+
+            breakpoints = breakpoints + chiasma
+
+            orig_p = init_parent
+
+            self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
+            CO_inputs = [sorted(breakpoints), orig_p, arm]
+
+            sim_array = np.asarray(self.sim_array)
+            indiv_CO_inputs.append(CO_inputs)
+        self.simulated_crossovers.append(indiv_CO_inputs)
+
+        return sim_array
 
     def NA_subsampler(self, snp_input, sampling, all_subsamples):
 
@@ -622,72 +714,218 @@ class simulateSEQ:
 
         return snp_index
 
-    def simMeiosis(self, uniq_indivs, D, driver=1):
+class modData:
+
+    """
+    This class contains seperate functions from the simulator that are used to concatenate the Dmel numpy arrays and correct
+    coordinates due to the weird way that the Dmel genome is annotated.
+
+
+    """
+    def __init__(self):
+        self.SNP_samples = []
+        self.genome_intervals = None
+        self.chroms = None
+        self.err = 0.001
+
+    def readChromatin(self, acessible_sites='/home/iskander/Documents/Barbash_lab/mDrive/dmel_ATAC_peaks.bed'):
         """
-        In order to more realistically simulate drive I am going to to inherently implement a drive mechanic in my simulation of all of my individuals.
-        I will do this by biasing the "meiosis" of the P1 allele in meiosis. My hope is that by doing this I will be more accurately modelling the true
-        rate of allele frequency decay that would be seen in a real population.
-
-
+        Function reads in a bed file that contains the genomic intervals that reads can be sampled off of.
         :return:
         """
 
-        #Simulate the meiosis
+        self.genome_intervals = pd.read_csv(acessible_sites, sep='\t', header=None)
 
-        gamete_vector = np.zeros(shape=(3, uniq_indivs))
-        for chromosome in range(3):
-            if chromosome == driver: # sim meiosis with strength of driver
-                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5 - D)
+        seen_chroms = set()
+        add_chroms = seen_chroms.add
+        self.chroms = np.asarray([x for x in self.genome_intervals.values[:, 0] if not (x in seen_chroms or add_chroms(x))] ) # add the chromosome names in order from the rmap file
+
+    def drawReads(self, cell_cov, readlength):
+        """
+        Now we sample reads off of the SNP array by drawing 75bp long reads from the acessible genomic intervals as determined
+        from the readChromatin function
+
+        :param cell:
+        :param coverage:
+        :return:
+        """
+
+        #to make the function ammenable to multiprocessing we have to zip our data with coverage and then unpack it within the function
+        cell = cell_cov[0]
+        coverage = cell_cov[1]
+
+        mappedReads = [[] for x in range(len(cell))]
+        reads = np.random.choice(a=self.genome_intervals.values.shape[0], size=coverage) #draw from the genomic intervals
+
+        tot_snps = 0
+        no_snps = 0
+        for read in reads: #now simulate drawing a read from within the genomic interval
+            genome_interval = [self.genome_intervals.values[read][1] + int(readlength/2), self.genome_intervals.values[read][2] - int(readlength/2)]
+            chromosome = str(self.genome_intervals.values[read][0])
+
+            #draw a read from the interval:
+
+            pos = np.random.randint(low=genome_interval[0], high=genome_interval[1]+1)
+            chrom_index = np.where(self.chroms == chromosome)[0][0]
+            chromSNPs = cell[chrom_index][:,0] #Get the SNP array
+            snps_sampled = list(np.intersect1d(np.where(chromSNPs >= pos-int(readlength/2)), np.where(chromSNPs <= pos + int(readlength/2))) )#retrieve all of the SNPs within the 75 bp interval
+            tot_snps += len(snps_sampled)
+            #retain which SNPs were sampled by which read so I can be fancy and do over sampling of certain genotypes
+            if len(snps_sampled) > 0:
+                mappedReads[chrom_index].append(snps_sampled)
             else:
-                gamete_vector[chromosome] = np.random.binomial(n=1, size=uniq_indivs, p=.5)
+                no_snps += 1
 
-        #Vector with gametes is now filled and we shall return it
+        #Now reads have been drawn and the indices of each SNP are in arrays I can fill out an array:
 
-        return gamete_vector.astype(int)
+        lowCov_SNPs = []
+        for chromosome in range(len(mappedReads)):
+            SNP_calls = np.full(fill_value=np.nan, shape=cell[chromosome].shape[0])
+            for SNPs in mappedReads[chromosome]:
+                SNP_state = cell[chromosome][SNPs][:,1]
+                het_call = np.random.randint(low=0, high=2) #randomly choose P1 or P2 for a het site, but be the same for all on the same read
+                SNP_state[np.where(SNP_state == 1)] = het_call
 
-    def simulateRecomb(self, reference, gametes, simID = 1):
+                SNP_calls[SNPs] = SNP_state #replace our NaN filled array with our SNP calls
 
-        self.sim_array = [list() for chr in range(5)]
-        indiv_CO_inputs = [simID]
+            #Now let's add error into the sub sampling:
+            called = np.where(np.isnan(SNP_calls) == False) #Find all non-empty sites
 
-        arm_to_gametes = [0,0,1,1,2] #code to translate from the arm to the full length chromosome to determine the parental gamete
-        for arm in range(5):
-            chromosome = arm_to_gametes[arm]
-            breakpoints = []
-            # Call initial state of chromosome#
-            max_BP = self.heterochromatin[arm][1]
-            min_BP = self.heterochromatin[arm][0]
+            err_sampling = np.random.binomial(p=self.err, n=1, size=len(SNP_calls[called])) #compute bernoulli random trials w/ sequencing error as the p
+            #if the trial is success i.e. a 1 that means that we have an error we then sample three states at random w/ weighted probabilities:
 
-            # Generate the E value for a chromosome based on the drosophila E-values
-            # E0, E1, E2
-            E, chiasma_vector = self.simChiasma(arm)
-            chiasma, init_parent = self.computeBreakpoint(arm=arm, chiasma_vector=chiasma_vector, E=E, gamete=gametes[chromosome])
+            # 0 -- P1 25% chance
+            # 1 -- P2 25% chance
+            # 2 -- neither P1 nor P2 50% chance
+            err_snps = np.random.choice(a=[0, 1, 2], p=[.25, .25, .5], size=len(err_sampling[np.where(err_sampling == 1)]))
+            SNP_calls[called[0][np.where(err_sampling == 1)]] = err_snps #now replace all the SNPs that were called as errors with the new value
+            chrom_array = np.column_stack((cell[chromosome][:,0], SNP_calls))
+            lowCov_SNPs.append(chrom_array)
 
-            breakpoints = breakpoints + chiasma
+        #Now all the chromosomes have been sub sampled given the reads we can output it from this function and recurr for all individuals
 
-            orig_p = init_parent
-            self.simulateSNP(sorted(breakpoints), reference, init_parent, arm)
-            CO_inputs = [sorted(breakpoints), orig_p, arm]
+        return np.asarray(lowCov_SNPs)
 
-            sim_array = np.asarray(self.sim_array)
-            indiv_CO_inputs.append(CO_inputs)
-        self.simulated_crossovers.append(indiv_CO_inputs)
+    def concatArrays(self, SNP):
+        """
+        Function to simply concatenate L and R arms of the chromosomes in the melanogaster assembly
 
-        return sim_array
+        :param SNP:
+        :return:
+        """
+        concatSNPs = []
+        SNP[1][:,0] = SNP[1][:,0] + 23000000
+        SNP[3][:,0] = SNP[3][:,0] + 24500000
+
+        concatSNPs.append(np.vstack((SNP[0], SNP[1])) )
+        concatSNPs.append(np.vstack((SNP[2], SNP[3])))
+        concatSNPs.append(SNP[4])
+
+        return np.asarray(concatSNPs)
+
+    def NA_subsampler(self, snp_input, sampling, all_subsamples):
+
+
+
+        err = 0.001
+
+        genome_pos = np.concatenate((snp_input[0][:, 0], snp_input[1][:, 0], snp_input[2][:, 0], snp_input[3][:, 0], snp_input[4][:, 0]))
+
+        # generate random SNPs to become NaNs
+        rand_snps = sorted(random.sample(range(len(genome_pos) - 1), len(genome_pos) - (int(sampling))))
+
+        for chrom in range(5):
+
+            # Filled the SNP array with NaNs
+            for snp in rand_snps:
+                if snp >= all_subsamples[chrom][0] and snp <= all_subsamples[chrom][1]:
+                    translate_snp = snp - all_subsamples[chrom][0]
+
+                    snp_input[chrom][translate_snp][1] = np.nan
+
+                elif snp > all_subsamples[chrom][1]:
+                    break
+
+            # Add sequencing errors to the SNP arrays
+            data = np.argwhere(np.isnan(snp_input[chrom][:,1]) == False).T[0]
+            n = np.random.binomial(len(data), err)
+            errors = np.random.choice(data, size=n, replace=False)
+            snp_input[chrom][:,1][errors] = 2
+
+
+        return snp_input
+
+    def get_SNP_bounds(self, snp_input):
+        # Subroutine for finding indices of SNP boundaries
+        zero_pos = 0
+        snp_index = []
+        for chrom in range(5):
+            end_index = len(snp_input[chrom]) - 1
+            snp_index.append([zero_pos, end_index + zero_pos])
+
+            zero_pos += end_index + 1
+
+        return snp_index
+
+
+def simSR():
+    """
+    Wrapper function to simulate short reads sampled off of each cell
+
+    :return:
+    """
+
+    myMods = modData()
+    mySimulation = simulateSEQ()
+    myMods.readChromatin()
+
+
+    path, file = os.path.split(myArgs.args.reference)
+    myMods.SNP_samples = mySimulation.load_reference(path=path, reference=file, encoding='latin1')
+
+
+    coverage = np.random.geometric(p= (1/myArgs.args.coverage), size=len(myMods.SNP_samples))  # Draw number of reads from a geometric distribution
+    covArgs = zip(myMods.SNP_samples, coverage) #We zip our SNP arrays and the coverage that they will get into an iterable
+    #because multiprocessing.map can only take one iterable as an argument
+
+    with Pool(processes=myArgs.args.jobs) as myPool:
+        lowCov_SNPs = myPool.map(partial(myMods.drawReads, readlength=myArgs.args.read_length), covArgs)
+        myPool.close()
+
+    output = os.path.join(path, 'SPARSE_'+file)
+    np.save(output, np.asarray(lowCov_SNPs))
+
+
+def concat_dMel():
+    SNP_data = []
+    myMods = modData()
+    mySimulation = simulateSEQ()
+    path, file = os.path.split(myArgs.args.reference)
+    myMods.SNP_samples = mySimulation.load_reference(path=path, reference=file, encoding='latin1')
+    for cell in myMods.SNP_samples:
+        concat_SNPs = myMods.concatArrays(SNP=cell)
+        SNP_data.append(concat_SNPs)
+
+    SNP_data = np.asarray(SNP_data)
+
+    output = os.path.join(path, file[:-4] + '.concat.npy')
+    np.save(output, SNP_data)
+
 
 def sample_lowCoverage(snp):
+    myMods = modData()
     mySimulation = simulateSEQ()
     path, file = os.path.split(snp)
-    mySimulation.SNP_samples = mySimulation.load_reference(path=path, reference=file, encoding='latin1')
+    myMods.SNP_samples = mySimulation.load_reference(path=path, reference=file, encoding='latin1')
 
 
-    snp_bounds = mySimulation.get_SNP_bounds(mySimulation.SNP_samples[0])
+    snp_bounds = myMods.get_SNP_bounds(mySimulation.SNP_samples[0])
 
 
     for cell in range(len(mySimulation.SNP_samples)):
 
         cov = max(300, int(np.random.exponential(myArgs.args.coverage)))
-        mySimulation.SNP_samples[cell] = mySimulation.NA_subsampler(snp_input=mySimulation.SNP_samples[cell], sampling=cov, all_subsamples=snp_bounds)
+        mySimulation.SNP_samples[cell] = myMods.NA_subsampler(snp_input=mySimulation.SNP_samples[cell], sampling=cov, all_subsamples=snp_bounds)
 
     output = os.path.join(path, 'SPARSE_'+file)
     np.save(output, mySimulation.SNP_samples)
@@ -701,8 +939,11 @@ if __name__ == '__main__':
     myArgs = CommandLine()
     ###########
 
-    if myArgs.args.subsample != False:
-        sample_lowCoverage(myArgs.args.subsample)
+    if myArgs.args.subsample == True:
+        simSR()
+
+    elif myArgs.args.concatenate == True:
+        concat_dMel()
 
     else:
         ########
@@ -720,11 +961,12 @@ if __name__ == '__main__':
 
         # Invoke meiosis first:
         gamete_vector = simulate.simMeiosis(uniq_indivs=myArgs.args.individuals, D=myArgs.args.segregation_distortion,
-                                            driver=myArgs.args.driver_chrom)
+                                            driver=myArgs.args.driver_chrom, num_chromosomes=myArgs.args.num_chromosomes)
 
         #The size distortion will increase the probability of drawing individuals from the gamete vector proportional to the distortion parameter
         noisy_cells = np.random.randint(low=myArgs.args.wells * 20, high=(myArgs.args.wells * 25) + 1)  # Generate the number of cells sequenced in our pool with some random noise
-        cell_samples = simulate.sizeGametes(size_locus=myArgs.args.arm, size_distortion=myArgs.args.size_distortion, cell_pool=noisy_cells, gametes=gamete_vector)
+        cell_samples = simulate.sizeGametes(size_locus=myArgs.args.arm, size_distortion=myArgs.args.size_distortion,
+                                            cell_pool=noisy_cells, gametes=gamete_vector)
 
         #We now have a vector containing all of identities of all cells. Now must be a little tricky to conform this data structure to our other methods
         E_uniq = list(set(cell_samples))
@@ -733,10 +975,11 @@ if __name__ == '__main__':
         #### Generate all of the unique cells
 
         #Now iterate through the gametes and produce their recombination breakpoints in accordance to our allele frequencies
+
         index = 0
         for sim in E_uniq:
             gametes = gamete_vector[:,sim]
-            simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=index, gametes=gametes)
+            simulated_SNPs = simulate.simulateRecomb(reference=reference_alleles, simID=index, gametes=gametes, telo=myArgs.args.telocentric)
             all_simulations.append(simulated_SNPs)
             index += 1
 
@@ -760,29 +1003,18 @@ if __name__ == '__main__':
         all_simulations = all_simulations + size_duplicates
 
         #Write out SNP file that contains positional info of our segregation distortion
-        chroms = {0:'2', 1:'3', 2:'X'}
-        with open('{0}.SNP.out'.format(myArgs.args.output), 'w') as mySNP:
+        if myArgs.args.telocentric == True:
+            chroms = {0:'2', 1:'3', 2:'4', 3:'5', 4:'X'}
+        else:
+            chroms = {0:'2L', 1:'2R', 2:'3L',  3:'3R', 4:'X'}
+        with open('{0}.log'.format(myArgs.args.output), 'w') as mySNP:
             mySNP.write("SizeDistortion\tChrom:{0}\tStrength:{1}\tPos:CENTROMERE\n".format(chroms[myArgs.args.arm], myArgs.args.size_distortion))
             mySNP.write("SegDistortion\tChrom:{0}\tStrength:{1}\tPos:CENTROMERE\n".format(chroms[myArgs.args.driver_chrom], myArgs.args.segregation_distortion))
+            mySNP.write('{0} individuals\t{1} cells'.format(myArgs.args.individuals, noisy_cells))
         mySNP.close()
 
 
 
-        #Generate at random which individuals will be sampled multiple times for stochasticity
-        #for collision in range(non_Uniq):
-        #    index = random.randint(0, len(simulate.simulated_crossovers)-1)
-        #    crossover = simulate.simulated_crossovers[index]
-        #    simulate.sim_array = [list() for chr in range(5)]
-
-        #    for arm in range(1,6):
-        #        simulate.simulateSNP(breakpoint=crossover[arm][0], reference=reference_alleles, parental= crossover[arm][1], arm=crossover[arm][2])
-
-         #   simulate.simulated_crossovers.append(crossover)
-         #   all_simulations.append(np.asarray(simulate.sim_array))
-
-        #all_simulations = np.asarray(all_simulations)
-
-        #Save the final output of the simulations
         np.save(myArgs.args.output+'.npy', all_simulations)
         with open(myArgs.args.output+'_crossovers.tsv', 'w') as myCO:
 
@@ -792,15 +1024,14 @@ if __name__ == '__main__':
                 for arm in range(1,6):
                     #Format the breakpoints
                     bp_str = [str(bp) for bp in ind[arm][0]]
-                    breakpoints= ','.join(bp_str)
+                    breakpoints = ','.join(bp_str)
 
-                    chrom_arm = simulate.chr_mapping[str(arm-1)]
+                    chrom_arm = chroms[arm-1]
 
                     #Format parental haplotypes
                     parents = []
                     p_switch = {0:1, 1:0}
-                    #print(chrom_arm)
-                    #print(bp_str, str(ind[arm][1]))
+
                     for p in range(len(bp_str)+1):
                         if p % 2 == 0:
                             p_state = str(ind[arm][1])
