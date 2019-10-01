@@ -1,0 +1,13 @@
+This document contains quick info on the RAL lines I used to do my first tests of the nuclei extractions and SCI-SEQ libraries. I used crosses from Sarah Lower's work in the Barbash lab. I used flies from the cross scheme:
+
+RAL129 M x RAL882 F -> RAL129/RAL882 F x RAL129 M
+
+There were roughly 2,200 females and 2,000 males harvested from this BC1 cross which all were pooled and decapitated via LN treatment and passage through a sieve. I would estimate losing a 50-100 or so flies throughout the decapitation process from being stuck to the sieve and the collection plate.
+
+
+8/8/19
+Approximately 500 BC1 flies were used for a test extraction which failed. The initial nuclei extraction went OK. The nuclei were small and a bit difficult to spot at first, but we are able to discern the puncta. The preparation was a little bit dirty as it had bacteria, and yeast as well as chitinous debris. We then attempted to place ~20,000 nuclei in each well of a 96 well plate by diluting the sample to roughly that concentration. We performed the Tn5 step at 50C and then visualized the nuclei. It seemed that there were some nuclei that erupted and so we are considering reducing the temperature to 37C in the future. There may have been issues with the buffer as well which could have been a problem source. 
+
+8/9/19
+We attempted to use the FACS to sort 25 nuclei per well, but the output of the FACS gates was very weird. There seemed to be no real distinct cell populations and there was a lot of strange unclear signal. I think there may have been a lot of debris and yeast cells messing with our stuff.
+
