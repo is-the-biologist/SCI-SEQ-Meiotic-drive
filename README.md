@@ -1,4 +1,4 @@
-# SCI-SEQ-Meiotic-drive
+# SCI-SEQ-Meiotic-drive (WIP)
 #### Iskander Said -- Barbash Lab -- Clark lab -- Cornell University 2019
 Repository of Python scripts and analysis tools necessary for the analysis and simulation of single cell sequencing data for meiotic drive detection.
 
